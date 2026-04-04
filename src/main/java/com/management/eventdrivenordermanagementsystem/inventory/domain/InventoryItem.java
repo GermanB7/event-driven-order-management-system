@@ -24,5 +24,19 @@ public record InventoryItem(
         }
         return new InventoryItem(sku, availableQuantity, reservedQuantity, now);
     }
+
+    public InventoryItem reserve(int quantity, Instant now) {
+        if (quantity <= 0) {
+            throw new InventoryDomainException("Inventory reservation quantity must be > 0");
+        }
+        if (now == null) {
+            throw new InventoryDomainException("Inventory updatedAt must be present");
+        }
+        if (availableQuantity < quantity) {
+            throw new InventoryDomainException("Insufficient inventory available for sku " + sku);
+        }
+
+        return new InventoryItem(sku, availableQuantity - quantity, reservedQuantity + quantity, now);
+    }
 }
 
