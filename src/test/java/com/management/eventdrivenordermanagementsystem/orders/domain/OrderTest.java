@@ -82,5 +82,44 @@ class OrderTest {
 
         assertThat(order.status()).isEqualTo(OrderStatus.CREATED);
     }
-}
 
+    @Test
+    void canMoveToInventoryReservationPendingFromCreated() {
+        UUID orderId = UUID.randomUUID();
+        OrderItem item = OrderItem.create(UUID.randomUUID(), orderId, "SKU-1", 1, new BigDecimal("15.00"));
+
+        Order order = Order.create(
+            orderId,
+            UUID.randomUUID(),
+            "USD",
+            List.of(item),
+            Instant.parse("2026-04-01T10:00:00Z")
+        );
+
+        Order updated = order.markInventoryReservationPending(Instant.parse("2026-04-01T10:05:00Z"));
+
+        assertThat(updated.status()).isEqualTo(OrderStatus.INVENTORY_RESERVATION_PENDING);
+        assertThat(updated.updatedAt()).isEqualTo(Instant.parse("2026-04-01T10:05:00Z"));
+    }
+
+    @Test
+    void cannotMoveToInventoryReservationPendingWhenStatusIsNotCreated() {
+        UUID orderId = UUID.randomUUID();
+        OrderItem item = OrderItem.create(UUID.randomUUID(), orderId, "SKU-1", 1, new BigDecimal("15.00"));
+
+        Order order = Order.rehydrate(
+            orderId,
+            UUID.randomUUID(),
+            OrderStatus.CANCELLED,
+            "USD",
+            new BigDecimal("15.00"),
+            Instant.parse("2026-04-01T10:00:00Z"),
+            Instant.parse("2026-04-01T10:01:00Z"),
+            List.of(item)
+        );
+
+        assertThatThrownBy(() -> order.markInventoryReservationPending(Instant.parse("2026-04-01T10:02:00Z")))
+            .isInstanceOf(OrderDomainException.class)
+            .hasMessageContaining("only from CREATED");
+    }
+}

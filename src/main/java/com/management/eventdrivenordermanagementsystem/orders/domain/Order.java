@@ -93,5 +93,14 @@ public record Order(
     public List<OrderItem> itemsCopy() {
         return new ArrayList<>(items);
     }
-}
 
+    public Order markInventoryReservationPending(Instant now) {
+        if (status != OrderStatus.CREATED) {
+            throw new OrderDomainException("Order can move to INVENTORY_RESERVATION_PENDING only from CREATED");
+        }
+        if (now == null) {
+            throw new OrderDomainException("Order updatedAt must be present");
+        }
+        return new Order(id, customerId, OrderStatus.INVENTORY_RESERVATION_PENDING, currency, totalAmount, createdAt, now, List.copyOf(items));
+    }
+}
