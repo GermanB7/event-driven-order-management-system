@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.management.eventdrivenordermanagementsystem.messaging.event.EventType;
 import com.management.eventdrivenordermanagementsystem.orders.application.MarkOrderInventoryReservationPendingUseCase;
+import com.management.eventdrivenordermanagementsystem.orders.application.MarkOrderPaymentPendingUseCase;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
@@ -24,16 +25,21 @@ public class OrderWorkflowEventListener {
 
     private final ObjectMapper objectMapper;
     private final MarkOrderInventoryReservationPendingUseCase markPendingUseCase;
+    private final MarkOrderPaymentPendingUseCase markPaymentPendingUseCase;
     private final Counter pendingTransitionCounter;
+    private final Counter paymentPendingTransitionCounter;
 
     public OrderWorkflowEventListener(
         ObjectMapper objectMapper,
         MarkOrderInventoryReservationPendingUseCase markPendingUseCase,
+        MarkOrderPaymentPendingUseCase markPaymentPendingUseCase,
         MeterRegistry meterRegistry
     ) {
         this.objectMapper = objectMapper;
         this.markPendingUseCase = markPendingUseCase;
+        this.markPaymentPendingUseCase = markPaymentPendingUseCase;
         this.pendingTransitionCounter = meterRegistry.counter("orders.workflow.inventory.pending.transition");
+        this.paymentPendingTransitionCounter = meterRegistry.counter("orders.workflow.payment.pending.transition");
     }
 
     @KafkaListener(
@@ -42,7 +48,8 @@ public class OrderWorkflowEventListener {
     )
     public void onMessage(ConsumerRecord<String, String> record) {
         String eventType = header(record, "eventType");
-        if (!EventType.INVENTORY_RESERVATION_REQUESTED.name().equals(eventType)) {
+        if (!EventType.INVENTORY_RESERVATION_REQUESTED.name().equals(eventType)
+            && !EventType.INVENTORY_RESERVED.name().equals(eventType)) {
             return;
         }
 
@@ -51,17 +58,30 @@ public class OrderWorkflowEventListener {
             UUID orderId = UUID.fromString(payload.path("orderId").asText());
             String workflowId = payload.path("workflowId").asText(null);
 
-            markPendingUseCase.execute(orderId);
-            pendingTransitionCounter.increment();
+            if (EventType.INVENTORY_RESERVATION_REQUESTED.name().equals(eventType)) {
+                markPendingUseCase.execute(orderId);
+                pendingTransitionCounter.increment();
+
+                log.info(
+                    "order_inventory_reservation_pending orderId={} workflowId={} eventType={}",
+                    orderId,
+                    workflowId,
+                    eventType
+                );
+                return;
+            }
+
+            markPaymentPendingUseCase.execute(orderId);
+            paymentPendingTransitionCounter.increment();
 
             log.info(
-                "order_inventory_reservation_pending orderId={} workflowId={} eventType={}",
+                "order_payment_pending orderId={} workflowId={} eventType={}",
                 orderId,
                 workflowId,
                 eventType
             );
         } catch (IOException | IllegalArgumentException exception) {
-            throw new IllegalStateException("Failed to process INVENTORY_RESERVATION_REQUESTED", exception);
+            throw new IllegalStateException("Failed to process workflow event", exception);
         }
     }
 

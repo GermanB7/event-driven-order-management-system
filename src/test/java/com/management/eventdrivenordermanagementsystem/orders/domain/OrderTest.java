@@ -122,4 +122,44 @@ class OrderTest {
             .isInstanceOf(OrderDomainException.class)
             .hasMessageContaining("only from CREATED");
     }
+
+    @Test
+    void canMoveToPaymentPendingFromInventoryReservationPending() {
+        UUID orderId = UUID.randomUUID();
+        OrderItem item = OrderItem.create(UUID.randomUUID(), orderId, "SKU-1", 1, new BigDecimal("15.00"));
+
+        Order order = Order.rehydrate(
+            orderId,
+            UUID.randomUUID(),
+            OrderStatus.INVENTORY_RESERVATION_PENDING,
+            "USD",
+            new BigDecimal("15.00"),
+            Instant.parse("2026-04-01T10:00:00Z"),
+            Instant.parse("2026-04-01T10:01:00Z"),
+            List.of(item)
+        );
+
+        Order updated = order.markPaymentPending(Instant.parse("2026-04-01T10:02:00Z"));
+
+        assertThat(updated.status()).isEqualTo(OrderStatus.PAYMENT_PENDING);
+        assertThat(updated.updatedAt()).isEqualTo(Instant.parse("2026-04-01T10:02:00Z"));
+    }
+
+    @Test
+    void cannotMoveToPaymentPendingFromCreated() {
+        UUID orderId = UUID.randomUUID();
+        OrderItem item = OrderItem.create(UUID.randomUUID(), orderId, "SKU-1", 1, new BigDecimal("15.00"));
+
+        Order order = Order.create(
+            orderId,
+            UUID.randomUUID(),
+            "USD",
+            List.of(item),
+            Instant.parse("2026-04-01T10:00:00Z")
+        );
+
+        assertThatThrownBy(() -> order.markPaymentPending(Instant.parse("2026-04-01T10:02:00Z")))
+            .isInstanceOf(OrderDomainException.class)
+            .hasMessageContaining("PAYMENT_PENDING");
+    }
 }

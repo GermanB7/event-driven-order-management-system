@@ -5,8 +5,7 @@ import com.management.eventdrivenordermanagementsystem.outbox.infrastructure.per
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.autoconfigure.jdbc.JdbcTest;
-import org.springframework.context.annotation.Import;
+import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.jdbc.Sql;
 
@@ -17,8 +16,10 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-@JdbcTest
-@Import(JdbcOutboxEventRepository.class)
+@SpringBootTest(properties = {
+    "outbox.relay.enabled=false",
+    "outbox.kafka.enabled=false"
+})
 @Sql(scripts = "classpath:sql/order-slice-schema.sql")
 class JdbcOutboxEventRepositoryIntegrationTest {
 

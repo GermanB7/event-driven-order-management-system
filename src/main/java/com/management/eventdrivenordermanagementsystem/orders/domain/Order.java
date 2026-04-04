@@ -103,4 +103,14 @@ public record Order(
         }
         return new Order(id, customerId, OrderStatus.INVENTORY_RESERVATION_PENDING, currency, totalAmount, createdAt, now, List.copyOf(items));
     }
+
+    public Order markPaymentPending(Instant now) {
+        if (status != OrderStatus.INVENTORY_RESERVATION_PENDING && status != OrderStatus.INVENTORY_RESERVED) {
+            throw new OrderDomainException("Order can move to PAYMENT_PENDING only from INVENTORY_RESERVATION_PENDING or INVENTORY_RESERVED");
+        }
+        if (now == null) {
+            throw new OrderDomainException("Order updatedAt must be present");
+        }
+        return new Order(id, customerId, OrderStatus.PAYMENT_PENDING, currency, totalAmount, createdAt, now, List.copyOf(items));
+    }
 }
