@@ -162,4 +162,91 @@ class OrderTest {
             .isInstanceOf(OrderDomainException.class)
             .hasMessageContaining("PAYMENT_PENDING");
     }
+
+    @Test
+    void canMoveToConfirmedFromPaymentPending() {
+        UUID orderId = UUID.randomUUID();
+        OrderItem item = OrderItem.create(UUID.randomUUID(), orderId, "SKU-1", 1, new BigDecimal("15.00"));
+
+        Order order = Order.rehydrate(
+            orderId,
+            UUID.randomUUID(),
+            OrderStatus.PAYMENT_PENDING,
+            "USD",
+            new BigDecimal("15.00"),
+            Instant.parse("2026-04-01T10:00:00Z"),
+            Instant.parse("2026-04-01T10:01:00Z"),
+            List.of(item)
+        );
+
+        Order updated = order.markConfirmed(Instant.parse("2026-04-01T10:03:00Z"));
+
+        assertThat(updated.status()).isEqualTo(OrderStatus.CONFIRMED);
+        assertThat(updated.updatedAt()).isEqualTo(Instant.parse("2026-04-01T10:03:00Z"));
+    }
+
+    @Test
+    void canMoveToFulfillmentRequestedFromConfirmed() {
+        UUID orderId = UUID.randomUUID();
+        OrderItem item = OrderItem.create(UUID.randomUUID(), orderId, "SKU-1", 1, new BigDecimal("15.00"));
+
+        Order order = Order.rehydrate(
+            orderId,
+            UUID.randomUUID(),
+            OrderStatus.CONFIRMED,
+            "USD",
+            new BigDecimal("15.00"),
+            Instant.parse("2026-04-01T10:00:00Z"),
+            Instant.parse("2026-04-01T10:03:00Z"),
+            List.of(item)
+        );
+
+        Order updated = order.markFulfillmentRequested(Instant.parse("2026-04-01T10:04:00Z"));
+
+        assertThat(updated.status()).isEqualTo(OrderStatus.FULFILLMENT_REQUESTED);
+        assertThat(updated.updatedAt()).isEqualTo(Instant.parse("2026-04-01T10:04:00Z"));
+    }
+
+    @Test
+    void canMoveToCancelledFromPaymentPending() {
+        UUID orderId = UUID.randomUUID();
+        OrderItem item = OrderItem.create(UUID.randomUUID(), orderId, "SKU-1", 1, new BigDecimal("15.00"));
+
+        Order order = Order.rehydrate(
+            orderId,
+            UUID.randomUUID(),
+            OrderStatus.PAYMENT_PENDING,
+            "USD",
+            new BigDecimal("15.00"),
+            Instant.parse("2026-04-01T10:00:00Z"),
+            Instant.parse("2026-04-01T10:03:00Z"),
+            List.of(item)
+        );
+
+        Order updated = order.markCancelled(Instant.parse("2026-04-01T10:04:00Z"));
+
+        assertThat(updated.status()).isEqualTo(OrderStatus.CANCELLED);
+        assertThat(updated.updatedAt()).isEqualTo(Instant.parse("2026-04-01T10:04:00Z"));
+    }
+
+    @Test
+    void cannotMoveToCancelledFromConfirmed() {
+        UUID orderId = UUID.randomUUID();
+        OrderItem item = OrderItem.create(UUID.randomUUID(), orderId, "SKU-1", 1, new BigDecimal("15.00"));
+
+        Order order = Order.rehydrate(
+            orderId,
+            UUID.randomUUID(),
+            OrderStatus.CONFIRMED,
+            "USD",
+            new BigDecimal("15.00"),
+            Instant.parse("2026-04-01T10:00:00Z"),
+            Instant.parse("2026-04-01T10:03:00Z"),
+            List.of(item)
+        );
+
+        assertThatThrownBy(() -> order.markCancelled(Instant.parse("2026-04-01T10:04:00Z")))
+            .isInstanceOf(OrderDomainException.class)
+            .hasMessageContaining("CANCELLED only from PAYMENT_PENDING");
+    }
 }

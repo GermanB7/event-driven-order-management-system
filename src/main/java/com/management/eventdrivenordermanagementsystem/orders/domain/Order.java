@@ -113,4 +113,34 @@ public record Order(
         }
         return new Order(id, customerId, OrderStatus.PAYMENT_PENDING, currency, totalAmount, createdAt, now, List.copyOf(items));
     }
+
+    public Order markConfirmed(Instant now) {
+        if (status != OrderStatus.PAYMENT_PENDING) {
+            throw new OrderDomainException("Order can move to CONFIRMED only from PAYMENT_PENDING");
+        }
+        if (now == null) {
+            throw new OrderDomainException("Order updatedAt must be present");
+        }
+        return new Order(id, customerId, OrderStatus.CONFIRMED, currency, totalAmount, createdAt, now, List.copyOf(items));
+    }
+
+    public Order markFulfillmentRequested(Instant now) {
+        if (status != OrderStatus.CONFIRMED) {
+            throw new OrderDomainException("Order can move to FULFILLMENT_REQUESTED only from CONFIRMED");
+        }
+        if (now == null) {
+            throw new OrderDomainException("Order updatedAt must be present");
+        }
+        return new Order(id, customerId, OrderStatus.FULFILLMENT_REQUESTED, currency, totalAmount, createdAt, now, List.copyOf(items));
+    }
+
+    public Order markCancelled(Instant now) {
+        if (status != OrderStatus.PAYMENT_PENDING) {
+            throw new OrderDomainException("Order can move to CANCELLED only from PAYMENT_PENDING");
+        }
+        if (now == null) {
+            throw new OrderDomainException("Order updatedAt must be present");
+        }
+        return new Order(id, customerId, OrderStatus.CANCELLED, currency, totalAmount, createdAt, now, List.copyOf(items));
+    }
 }

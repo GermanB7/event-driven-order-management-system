@@ -3,6 +3,9 @@ package com.management.eventdrivenordermanagementsystem.orders.interfaces.messag
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.management.eventdrivenordermanagementsystem.messaging.event.EventType;
+import com.management.eventdrivenordermanagementsystem.orders.application.MarkOrderCancelledUseCase;
+import com.management.eventdrivenordermanagementsystem.orders.application.MarkOrderConfirmedUseCase;
+import com.management.eventdrivenordermanagementsystem.orders.application.MarkOrderFulfillmentRequestedUseCase;
 import com.management.eventdrivenordermanagementsystem.orders.application.MarkOrderInventoryReservationPendingUseCase;
 import com.management.eventdrivenordermanagementsystem.orders.application.MarkOrderPaymentPendingUseCase;
 import io.micrometer.core.instrument.Counter;
@@ -26,20 +29,35 @@ public class OrderWorkflowEventListener {
     private final ObjectMapper objectMapper;
     private final MarkOrderInventoryReservationPendingUseCase markPendingUseCase;
     private final MarkOrderPaymentPendingUseCase markPaymentPendingUseCase;
+    private final MarkOrderConfirmedUseCase markConfirmedUseCase;
+    private final MarkOrderFulfillmentRequestedUseCase markFulfillmentRequestedUseCase;
+    private final MarkOrderCancelledUseCase markCancelledUseCase;
     private final Counter pendingTransitionCounter;
     private final Counter paymentPendingTransitionCounter;
+    private final Counter confirmedTransitionCounter;
+    private final Counter fulfillmentRequestedTransitionCounter;
+    private final Counter cancelledTransitionCounter;
 
     public OrderWorkflowEventListener(
         ObjectMapper objectMapper,
         MarkOrderInventoryReservationPendingUseCase markPendingUseCase,
         MarkOrderPaymentPendingUseCase markPaymentPendingUseCase,
+        MarkOrderConfirmedUseCase markConfirmedUseCase,
+        MarkOrderFulfillmentRequestedUseCase markFulfillmentRequestedUseCase,
+        MarkOrderCancelledUseCase markCancelledUseCase,
         MeterRegistry meterRegistry
     ) {
         this.objectMapper = objectMapper;
         this.markPendingUseCase = markPendingUseCase;
         this.markPaymentPendingUseCase = markPaymentPendingUseCase;
+        this.markConfirmedUseCase = markConfirmedUseCase;
+        this.markFulfillmentRequestedUseCase = markFulfillmentRequestedUseCase;
+        this.markCancelledUseCase = markCancelledUseCase;
         this.pendingTransitionCounter = meterRegistry.counter("orders.workflow.inventory.pending.transition");
         this.paymentPendingTransitionCounter = meterRegistry.counter("orders.workflow.payment.pending.transition");
+        this.confirmedTransitionCounter = meterRegistry.counter("orders.workflow.confirmed.transition");
+        this.fulfillmentRequestedTransitionCounter = meterRegistry.counter("orders.workflow.fulfillment.requested.transition");
+        this.cancelledTransitionCounter = meterRegistry.counter("orders.workflow.cancelled.transition");
     }
 
     @KafkaListener(
@@ -49,7 +67,10 @@ public class OrderWorkflowEventListener {
     public void onMessage(ConsumerRecord<String, String> record) {
         String eventType = header(record, "eventType");
         if (!EventType.INVENTORY_RESERVATION_REQUESTED.name().equals(eventType)
-            && !EventType.INVENTORY_RESERVED.name().equals(eventType)) {
+            && !EventType.INVENTORY_RESERVED.name().equals(eventType)
+            && !EventType.ORDER_CONFIRMED.name().equals(eventType)
+            && !EventType.SHIPMENT_PREPARATION_STARTED.name().equals(eventType)
+            && !EventType.ORDER_CANCELLED.name().equals(eventType)) {
             return;
         }
 
@@ -71,11 +92,50 @@ public class OrderWorkflowEventListener {
                 return;
             }
 
-            markPaymentPendingUseCase.execute(orderId);
-            paymentPendingTransitionCounter.increment();
+            if (EventType.INVENTORY_RESERVED.name().equals(eventType)) {
+                markPaymentPendingUseCase.execute(orderId);
+                paymentPendingTransitionCounter.increment();
+
+                log.info(
+                    "order_payment_pending orderId={} workflowId={} eventType={}",
+                    orderId,
+                    workflowId,
+                    eventType
+                );
+                return;
+            }
+
+            if (EventType.ORDER_CONFIRMED.name().equals(eventType)) {
+                markConfirmedUseCase.execute(orderId);
+                confirmedTransitionCounter.increment();
+
+                log.info(
+                    "order_confirmed orderId={} workflowId={} eventType={}",
+                    orderId,
+                    workflowId,
+                    eventType
+                );
+                return;
+            }
+
+            if (EventType.ORDER_CANCELLED.name().equals(eventType)) {
+                markCancelledUseCase.execute(orderId);
+                cancelledTransitionCounter.increment();
+
+                log.info(
+                    "order_cancelled orderId={} workflowId={} eventType={}",
+                    orderId,
+                    workflowId,
+                    eventType
+                );
+                return;
+            }
+
+            markFulfillmentRequestedUseCase.execute(orderId);
+            fulfillmentRequestedTransitionCounter.increment();
 
             log.info(
-                "order_payment_pending orderId={} workflowId={} eventType={}",
+                "order_fulfillment_requested orderId={} workflowId={} eventType={}",
                 orderId,
                 workflowId,
                 eventType
