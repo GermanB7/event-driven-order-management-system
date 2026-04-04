@@ -12,6 +12,7 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.dao.TransientDataAccessResourceException;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -19,6 +20,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
@@ -39,6 +41,7 @@ class ShipmentPreparationRequestedWorkflowListenerTest {
             new ObjectMapper(),
             shipmentRepository,
             outboxEventWriter,
+            new ShipmentConsumerFailureClassifier(),
             new SimpleMeterRegistry()
         );
     }
@@ -104,6 +107,45 @@ class ShipmentPreparationRequestedWorkflowListenerTest {
         listener.onMessage(consumerRecord);
 
         verify(shipmentRepository, never()).save(any());
+        verify(outboxEventWriter, never()).write(any());
+    }
+
+    @Test
+    void malformedPayloadIsClassifiedAsNonRetryable() {
+        ConsumerRecord<String, String> consumerRecord = new ConsumerRecord<>("order-events", 0, 0L, "key", "{invalid-json");
+        RecordHeaders headers = new RecordHeaders();
+        headers.add("eventType", EventType.SHIPMENT_PREPARATION_REQUESTED.name().getBytes(StandardCharsets.UTF_8));
+        headers.forEach(header -> consumerRecord.headers().add(header));
+
+        assertThatThrownBy(() -> listener.onMessage(consumerRecord))
+            .isInstanceOf(NonRetryableShipmentMessageException.class);
+
+        verify(shipmentRepository, never()).save(any());
+        verify(outboxEventWriter, never()).write(any());
+    }
+
+    @Test
+    void transientRepositoryFailureIsClassifiedAsRetryable() {
+        UUID orderId = UUID.randomUUID();
+        ConsumerRecord<String, String> consumerRecord = new ConsumerRecord<>(
+            "order-events",
+            0,
+            0L,
+            orderId.toString(),
+            """
+                {"orderId": "%s", "workflowId": "wf-402", "correlationId": "corr-402"}
+                """.formatted(orderId)
+        );
+        RecordHeaders headers = new RecordHeaders();
+        headers.add("eventType", EventType.SHIPMENT_PREPARATION_REQUESTED.name().getBytes(StandardCharsets.UTF_8));
+        headers.forEach(header -> consumerRecord.headers().add(header));
+
+        when(shipmentRepository.findByOrderId(orderId))
+            .thenThrow(new TransientDataAccessResourceException("database unavailable"));
+
+        assertThatThrownBy(() -> listener.onMessage(consumerRecord))
+            .isInstanceOf(RetryableShipmentMessageException.class);
+
         verify(outboxEventWriter, never()).write(any());
     }
 }

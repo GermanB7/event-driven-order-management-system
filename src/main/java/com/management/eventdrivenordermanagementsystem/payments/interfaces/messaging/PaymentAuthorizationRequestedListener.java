@@ -1,71 +1,69 @@
-package com.management.eventdrivenordermanagementsystem.shipping.interfaces.messaging;
+package com.management.eventdrivenordermanagementsystem.payments.interfaces.messaging;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.management.eventdrivenordermanagementsystem.messaging.application.OutboxEventWriter;
 import com.management.eventdrivenordermanagementsystem.messaging.event.EventEnvelope;
 import com.management.eventdrivenordermanagementsystem.messaging.event.EventType;
-import com.management.eventdrivenordermanagementsystem.shipping.application.port.ShipmentRepository;
-import com.management.eventdrivenordermanagementsystem.shipping.domain.Shipment;
-import com.management.eventdrivenordermanagementsystem.shipping.domain.ShipmentStatus;
+import com.management.eventdrivenordermanagementsystem.payments.application.port.PaymentRepository;
+import com.management.eventdrivenordermanagementsystem.payments.domain.Payment;
+import com.management.eventdrivenordermanagementsystem.payments.domain.PaymentStatus;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.Header;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.dao.DuplicateKeyException;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.io.IOException;
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
 @Component
-public class ShipmentPreparationRequestedWorkflowListener {
+public class PaymentAuthorizationRequestedListener {
 
-    private static final Logger log = LoggerFactory.getLogger(ShipmentPreparationRequestedWorkflowListener.class);
-    private static final String SHIPMENT_AGGREGATE_TYPE = "SHIPMENT";
+    private static final Logger log = LoggerFactory.getLogger(PaymentAuthorizationRequestedListener.class);
+    private static final String PAYMENT_AGGREGATE_TYPE = "PAYMENT";
 
     private final ObjectMapper objectMapper;
-    private final ShipmentRepository shipmentRepository;
+    private final PaymentRepository paymentRepository;
     private final OutboxEventWriter outboxEventWriter;
-    private final ShipmentConsumerFailureClassifier failureClassifier;
+    private final PaymentConsumerFailureClassifier failureClassifier;
     private final Counter acceptedCounter;
     private final Counter duplicateCounter;
     private final Counter failedCounter;
 
-    public ShipmentPreparationRequestedWorkflowListener(
+    public PaymentAuthorizationRequestedListener(
         ObjectMapper objectMapper,
-        ShipmentRepository shipmentRepository,
+        PaymentRepository paymentRepository,
         OutboxEventWriter outboxEventWriter,
-        ShipmentConsumerFailureClassifier failureClassifier,
+        PaymentConsumerFailureClassifier failureClassifier,
         MeterRegistry meterRegistry
     ) {
         this.objectMapper = objectMapper;
-        this.shipmentRepository = shipmentRepository;
+        this.paymentRepository = paymentRepository;
         this.outboxEventWriter = outboxEventWriter;
         this.failureClassifier = failureClassifier;
-        this.acceptedCounter = meterRegistry.counter("shipping.preparation.request.accepted");
-        this.duplicateCounter = meterRegistry.counter("shipping.preparation.request.duplicate");
-        this.failedCounter = meterRegistry.counter("shipping.preparation.request.failed");
+        this.acceptedCounter = meterRegistry.counter("payments.authorization.request.accepted");
+        this.duplicateCounter = meterRegistry.counter("payments.authorization.request.duplicate");
+        this.failedCounter = meterRegistry.counter("payments.authorization.request.failed");
     }
 
     @KafkaListener(
         topics = "${outbox.kafka.topic.order-events:order-events}",
-        groupId = "shipping-preparation-requested-listener",
-        containerFactory = "shipmentPreparationKafkaListenerContainerFactory"
+        groupId = "payment-authorization-requested-listener",
+        containerFactory = "paymentAuthorizationKafkaListenerContainerFactory"
     )
     @Transactional
     public void onMessage(ConsumerRecord<String, String> record) {
         String eventType = header(record, "eventType");
-        if (!EventType.SHIPMENT_PREPARATION_REQUESTED.name().equals(eventType)) {
+        if (!EventType.PAYMENT_AUTHORIZATION_REQUESTED.name().equals(eventType)) {
             return;
         }
 
@@ -79,7 +77,6 @@ public class ShipmentPreparationRequestedWorkflowListener {
             String upstreamEventId = header(record, "eventId");
             workflowId = sourcePayload.path("workflowId").asText(null);
             String correlationId = sourcePayload.path("correlationId").asText(null);
-            String shippingRequestId = sourcePayload.path("shippingRequestId").asText(null);
 
             if (workflowId == null || workflowId.isBlank()) {
                 workflowId = orderId;
@@ -90,118 +87,111 @@ public class ShipmentPreparationRequestedWorkflowListener {
             if (upstreamEventId == null || upstreamEventId.isBlank()) {
                 upstreamEventId = orderId;
             }
-            if (shippingRequestId == null || shippingRequestId.isBlank()) {
-                shippingRequestId = upstreamEventId;
-            }
 
-            Optional<Shipment> existingShipment = shipmentRepository.findByOrderId(UUID.fromString(orderId));
-            if (existingShipment.isPresent() && existingShipment.get().status() == ShipmentStatus.PREPARING) {
+            UUID orderUuid = UUID.fromString(orderId);
+            Optional<Payment> existingPayment = paymentRepository.findByOrderId(orderUuid);
+            if (existingPayment.isPresent()) {
                 duplicateCounter.increment();
                 log.info(
-                    "shipment_preparation_duplicate orderId={} workflowId={} eventType={} shipmentStatus={}",
+                    "payment_authorization_duplicate orderId={} workflowId={} eventId={} paymentStatus={}",
                     orderId,
                     workflowId,
-                    eventType,
-                    existingShipment.get().status()
+                    eventId,
+                    existingPayment.get().status()
                 );
                 return;
             }
+
+            BigDecimal amount = sourcePayload.path("amount").decimalValue();
+            String currency = sourcePayload.path("currency").asText();
 
             Instant now = Instant.now();
-            Shipment shipment = Shipment.createPending(UUID.randomUUID(), UUID.fromString(orderId), now)
-                .markPreparing(now);
+            Payment payment = Payment.createPending(UUID.randomUUID(), orderUuid, amount, currency, now);
+            Payment processedPayment = shouldFailAuthorization(sourcePayload)
+                ? payment.markFailed(
+                    sourcePayload.path("failureReason").asText("PAYMENT_PROVIDER_DECLINED"),
+                    now
+                )
+                : payment.markAuthorized(now);
 
-            try {
-                shipmentRepository.save(shipment);
-            } catch (DuplicateKeyException exception) {
-                duplicateCounter.increment();
-                log.info(
-                    "shipment_preparation_duplicate orderId={} workflowId={} eventType={} error={}",
-                    orderId,
-                    workflowId,
-                    eventType,
-                    exception.getMessage()
-                );
-                return;
-            }
+            paymentRepository.save(processedPayment);
+
+            EventType resultEventType = processedPayment.status() == PaymentStatus.AUTHORIZED
+                ? EventType.PAYMENT_AUTHORIZED
+                : EventType.PAYMENT_FAILED;
 
             EventEnvelope envelope = new EventEnvelope(
                 UUID.randomUUID(),
-                EventType.SHIPMENT_PREPARATION_STARTED,
+                resultEventType,
                 orderId,
-                SHIPMENT_AGGREGATE_TYPE,
+                PAYMENT_AGGREGATE_TYPE,
                 workflowId,
                 correlationId,
                 upstreamEventId,
                 Instant.now(),
                 1,
-                buildShipmentStartedPayload(sourcePayload, workflowId, correlationId, upstreamEventId, shippingRequestId, shipment)
+                buildResultPayload(sourcePayload, processedPayment, workflowId, correlationId, upstreamEventId)
             );
 
             outboxEventWriter.write(envelope);
             acceptedCounter.increment();
 
             log.info(
-                "shipping_preparation_started orderId={} workflowId={} causationId={} shipmentId={} shipmentStatus={}",
+                "payment_authorization_processed orderId={} workflowId={} eventId={} paymentId={} resultEventType={}",
                 orderId,
                 workflowId,
-                upstreamEventId,
-                shipment.id(),
-                shipment.status()
+                eventId,
+                processedPayment.id(),
+                resultEventType
             );
         } catch (Exception exception) {
             RuntimeException classified = failureClassifier.classify(exception);
             failedCounter.increment();
             log.error(
-                "shipment_preparation_failed orderId={} workflowId={} eventId={} eventType={} retryable={} failureReason={}",
+                "payment_authorization_failed orderId={} workflowId={} eventId={} eventType={} retryable={} failureReason={}",
                 orderId,
                 workflowId,
                 eventId,
                 eventType,
-                classified instanceof RetryableShipmentMessageException,
+                classified instanceof RetryablePaymentMessageException,
                 exception.getClass().getSimpleName()
             );
             throw classified;
         }
     }
 
-    private ObjectNode buildShipmentStartedPayload(
+    private ObjectNode buildResultPayload(
         JsonNode sourcePayload,
+        Payment payment,
         String workflowId,
         String correlationId,
-        String causationId,
-        String shippingRequestId,
-        Shipment shipment
+        String causationId
     ) {
         ObjectNode payload = objectMapper.createObjectNode();
         payload.put("orderId", sourcePayload.path("orderId").asText());
         payload.put("workflowId", workflowId);
         payload.put("correlationId", correlationId);
         payload.put("causationId", causationId);
-        payload.put("shippingRequestId", shippingRequestId);
-        payload.put("shipmentId", shipment.id().toString());
-        payload.put("shipmentStatus", shipment.status().name());
+        payload.put("paymentId", payment.id().toString());
+        payload.put("paymentStatus", payment.status().name());
+        payload.put("currency", payment.currency());
+        payload.put("amount", payment.amount());
 
+        if (sourcePayload.hasNonNull("reservationId")) {
+            payload.put("reservationId", sourcePayload.path("reservationId").asText());
+        }
         if (sourcePayload.hasNonNull("customerId")) {
             payload.put("customerId", sourcePayload.path("customerId").asText());
         }
-        if (sourcePayload.hasNonNull("amount")) {
-            payload.set("amount", sourcePayload.get("amount"));
-        }
-        if (sourcePayload.hasNonNull("currency")) {
-            payload.put("currency", sourcePayload.path("currency").asText());
-        }
-        JsonNode itemsNode = sourcePayload.path("items");
-        if (itemsNode.isArray()) {
-            ArrayNode items = payload.putArray("items");
-            for (JsonNode item : (ArrayNode) itemsNode) {
-                ObjectNode copiedItem = items.addObject();
-                copiedItem.put("sku", item.path("sku").asText());
-                copiedItem.put("quantity", item.path("quantity").asInt());
-            }
+        if (payment.failureReason() != null && !payment.failureReason().isBlank()) {
+            payload.put("reason", payment.failureReason());
         }
 
         return payload;
+    }
+
+    private boolean shouldFailAuthorization(JsonNode sourcePayload) {
+        return sourcePayload.path("forceFailure").asBoolean(false);
     }
 
     private String header(ConsumerRecord<String, String> record, String key) {
@@ -212,6 +202,7 @@ public class ShipmentPreparationRequestedWorkflowListener {
         return new String(header.value(), StandardCharsets.UTF_8);
     }
 }
+
 
 
 
