@@ -26,53 +26,142 @@ public class JdbcOutboxEventRepository implements OutboxEventRepository {
     }
 
     @Override
-    public List<OutboxEventRecord> findPendingForPublish(int limit, Instant now) {
+    public List<OutboxEventRecord> findPendingForPublish(int limit, Instant now, Instant staleClaimBefore) {
         return jdbcTemplate.query(
             """
                 select id, aggregate_id, aggregate_type, event_type, payload, headers,
                        status, occurred_at, published_at, retry_count, next_retry_at
                 from outbox.outbox_event
-                where status in ('PENDING', 'FAILED')
-                  and (next_retry_at is null or next_retry_at <= ?)
+                where (
+                        status in ('PENDING', 'FAILED')
+                        and (next_retry_at is null or next_retry_at <= ?)
+                      )
+                   or (
+                        status = 'IN_PROGRESS'
+                        and claimed_at <= ?
+                      )
                 order by occurred_at asc
                 limit ?
                 """,
             OUTBOX_EVENT_ROW_MAPPER,
             Timestamp.from(now),
+            Timestamp.from(staleClaimBefore),
             limit
         );
     }
 
     @Override
-    public void markPublished(UUID eventId, Instant publishedAt) {
-        jdbcTemplate.update(
+    public boolean claimForPublish(UUID eventId, Instant now, Instant staleClaimBefore, Instant claimedAt, String claimedBy) {
+        int updatedRows = jdbcTemplate.update(
+            """
+                update outbox.outbox_event
+                set status = 'IN_PROGRESS',
+                    claimed_at = ?,
+                    claimed_by = ?
+                where id = ?
+                  and (
+                        (status in ('PENDING', 'FAILED') and (next_retry_at is null or next_retry_at <= ?))
+                        or (status = 'IN_PROGRESS' and claimed_at <= ?)
+                      )
+                """,
+            Timestamp.from(claimedAt),
+            claimedBy,
+            eventId,
+            Timestamp.from(now),
+            Timestamp.from(staleClaimBefore)
+        );
+        return updatedRows == 1;
+    }
+
+    @Override
+    public boolean markPublished(UUID eventId, Instant publishedAt) {
+        int updatedRows = jdbcTemplate.update(
             """
                 update outbox.outbox_event
                 set status = 'PUBLISHED',
                     published_at = ?,
-                    next_retry_at = null
+                    next_retry_at = null,
+                    claimed_at = null,
+                    claimed_by = null
                 where id = ?
+                  and status = 'IN_PROGRESS'
                 """,
             Timestamp.from(publishedAt),
             eventId
         );
+        return updatedRows == 1;
     }
 
     @Override
-    public void markFailedForRetry(UUID eventId, int retryCount, Instant nextRetryAt) {
-        jdbcTemplate.update(
+    public boolean markFailedForRetry(UUID eventId, int retryCount, Instant nextRetryAt, String lastError, Instant lastFailedAt) {
+        int updatedRows = jdbcTemplate.update(
             """
                 update outbox.outbox_event
                 set status = 'FAILED',
                     retry_count = ?,
-                    next_retry_at = ?
+                    next_retry_at = ?,
+                    last_error = ?,
+                    last_failed_at = ?,
+                    claimed_at = null,
+                    claimed_by = null
                 where id = ?
-                  and status <> 'PUBLISHED'
+                  and status = 'IN_PROGRESS'
                 """,
             retryCount,
             Timestamp.from(nextRetryAt),
+            lastError,
+            Timestamp.from(lastFailedAt),
             eventId
         );
+        return updatedRows == 1;
+    }
+
+    @Override
+    public boolean markDeadLettered(UUID eventId, int retryCount, String lastError, Instant deadLetteredAt) {
+        int updatedRows = jdbcTemplate.update(
+            """
+                update outbox.outbox_event
+                set status = 'DEAD_LETTER',
+                    retry_count = ?,
+                    next_retry_at = null,
+                    last_error = ?,
+                    last_failed_at = ?,
+                    dead_lettered_at = ?,
+                    claimed_at = null,
+                    claimed_by = null
+                where id = ?
+                  and status = 'IN_PROGRESS'
+                """,
+            retryCount,
+            lastError,
+            Timestamp.from(deadLetteredAt),
+            Timestamp.from(deadLetteredAt),
+            eventId
+        );
+        return updatedRows == 1;
+    }
+
+    @Override
+    public boolean requestReplay(UUID eventId, Instant replayedAt, String replayedBy) {
+        int updatedRows = jdbcTemplate.update(
+            """
+                update outbox.outbox_event
+                set status = 'FAILED',
+                    next_retry_at = ?,
+                    replay_count = replay_count + 1,
+                    replayed_at = ?,
+                    replayed_by = ?,
+                    claimed_at = null,
+                    claimed_by = null
+                where id = ?
+                  and status in ('FAILED', 'DEAD_LETTER')
+                """,
+            Timestamp.from(replayedAt),
+            Timestamp.from(replayedAt),
+            replayedBy,
+            eventId
+        );
+        return updatedRows == 1;
     }
 
     @Override

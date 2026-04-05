@@ -105,6 +105,7 @@ class InventoryReservationWorkflowIntegrationTest {
         );
         RecordHeaders reservationHeaders = new RecordHeaders();
         reservationHeaders.add("eventType", "INVENTORY_RESERVATION_REQUESTED".getBytes(StandardCharsets.UTF_8));
+        reservationHeaders.add("eventId", UUID.randomUUID().toString().getBytes(StandardCharsets.UTF_8));
         reservationHeaders.forEach(header -> reservationRequestedRecord.headers().add(header));
 
         orderWorkflowEventListener.onMessage(reservationRequestedRecord);
@@ -192,6 +193,7 @@ class InventoryReservationWorkflowIntegrationTest {
         );
         RecordHeaders paymentHeaders = new RecordHeaders();
         paymentHeaders.add("eventType", "INVENTORY_RESERVED".getBytes(StandardCharsets.UTF_8));
+        paymentHeaders.add("eventId", UUID.randomUUID().toString().getBytes(StandardCharsets.UTF_8));
         paymentHeaders.forEach(header -> paymentRequestedRecord.headers().add(header));
 
         orderWorkflowEventListener.onMessage(paymentRequestedRecord);

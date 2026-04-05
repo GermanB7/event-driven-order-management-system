@@ -1,7 +1,5 @@
 package com.management.eventdrivenordermanagementsystem.observability.application.dto;
 
-import java.util.List;
-
 public record FailedAsyncOperationView(
     String eventId,
     String eventType,
@@ -12,6 +10,9 @@ public record FailedAsyncOperationView(
     String failureReason,
     String publishStatus,
     boolean deadLettered,
+    int replayCount,
+    String replayedBy,
+    String replayedAt,
     String occurredAt,
     String nextRetryAt
 ) {

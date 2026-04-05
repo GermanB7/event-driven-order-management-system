@@ -8,11 +8,17 @@ import java.util.UUID;
 
 public interface OutboxEventRepository {
 
-    List<OutboxEventRecord> findPendingForPublish(int limit, Instant now);
+    List<OutboxEventRecord> findPendingForPublish(int limit, Instant now, Instant staleClaimBefore);
 
-    void markPublished(UUID eventId, Instant publishedAt);
+    boolean claimForPublish(UUID eventId, Instant now, Instant staleClaimBefore, Instant claimedAt, String claimedBy);
 
-    void markFailedForRetry(UUID eventId, int retryCount, Instant nextRetryAt);
+    boolean markPublished(UUID eventId, Instant publishedAt);
+
+    boolean markFailedForRetry(UUID eventId, int retryCount, Instant nextRetryAt, String lastError, Instant lastFailedAt);
+
+    boolean markDeadLettered(UUID eventId, int retryCount, String lastError, Instant deadLetteredAt);
+
+    boolean requestReplay(UUID eventId, Instant replayedAt, String replayedBy);
 
     long countPending(Instant now);
 }

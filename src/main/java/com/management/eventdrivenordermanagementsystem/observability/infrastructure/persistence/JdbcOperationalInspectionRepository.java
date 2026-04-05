@@ -22,6 +22,9 @@ import java.util.UUID;
 @Repository
 public class JdbcOperationalInspectionRepository implements OperationalInspectionRepository {
 
+    private static final String COLUMN_NEXT_RETRY_AT = "next_retry_at";
+    private static final String COLUMN_WORKFLOW_ID = "workflowId";
+
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
 
@@ -32,9 +35,16 @@ public class JdbcOperationalInspectionRepository implements OperationalInspectio
 
     @Override
     public List<WorkflowTimelineEventView> findEventsByWorkflowId(String workflowId) {
-        // In production (PostgreSQL), use: headers ->> 'workflowId' = ?
-        // For now, return empty list as H2 has limited JSON support
-        return List.of();
+        return jdbcTemplate.query(
+            """
+                select id, event_type, headers, status, retry_count, occurred_at, published_at, next_retry_at
+                from outbox.outbox_event
+                order by occurred_at asc, id asc
+                """,
+            new WorkflowTimelineRowMapper(objectMapper)
+        ).stream()
+            .filter(event -> workflowId.equals(event.workflowId()))
+            .toList();
     }
 
     @Override
@@ -54,12 +64,13 @@ public class JdbcOperationalInspectionRepository implements OperationalInspectio
     public List<FailedAsyncOperationView> findFailedOperations() {
         return jdbcTemplate.query(
             """
-                select id, event_type, aggregate_id, headers, status, retry_count, next_retry_at, occurred_at
+                select id, event_type, aggregate_id, headers, status, retry_count, next_retry_at, occurred_at,
+                       claimed_by, last_error, dead_lettered_at, replay_count, replayed_at, replayed_by
                 from outbox.outbox_event
-                where status in ('FAILED')
+                where status in ('FAILED', 'DEAD_LETTER')
                 order by next_retry_at asc nulls last, occurred_at desc
                 """,
-            (rs, rowNum) -> mapToFailedOperation(rs, null)
+            (rs, rowNum) -> mapToFailedOperation(rs)
         );
     }
 
@@ -67,55 +78,57 @@ public class JdbcOperationalInspectionRepository implements OperationalInspectio
     public List<FailedAsyncOperationView> findFailedOperationsByOrderId(UUID orderId) {
         return jdbcTemplate.query(
             """
-                select id, event_type, aggregate_id, headers, status, retry_count, next_retry_at, occurred_at
+                select id, event_type, aggregate_id, headers, status, retry_count, next_retry_at, occurred_at,
+                       claimed_by, last_error, dead_lettered_at, replay_count, replayed_at, replayed_by
                 from outbox.outbox_event
-                where aggregate_id = ? and status in ('FAILED')
+                where aggregate_id = ? and status in ('FAILED', 'DEAD_LETTER')
                 order by occurred_at desc
                 """,
-            (rs, rowNum) -> mapToFailedOperation(rs, null),
+            (rs, rowNum) -> mapToFailedOperation(rs),
             orderId.toString()
         );
     }
 
     @Override
     public WorkflowStatusAggregateView findWorkflowStatusAggregate(UUID orderId) {
-        String orderStatus = jdbcTemplate.queryForObject(
+        String orderStatus = queryStatusOrDefault(
             "select status from orders.orders where id = ?",
-            String.class,
-            orderId
+            orderId,
+            "UNKNOWN"
         );
 
-        String inventoryStatus = jdbcTemplate.queryForObject(
-            "select status from inventory.inventory_reservations where order_id = ? limit 1",
-            String.class,
-            orderId
+        String inventoryStatus = queryStatusOrDefault(
+            "select status from inventory.inventory_reservations where order_id = ? order by updated_at desc limit 1",
+            orderId,
+            "NOT_STARTED"
         );
 
-        String paymentStatus = jdbcTemplate.queryForObject(
+        String paymentStatus = queryStatusOrDefault(
             "select status from payments.payments where order_id = ?",
-            String.class,
-            orderId
+            orderId,
+            "NOT_STARTED"
         );
 
-        String shipmentStatus = jdbcTemplate.queryForObject(
+        String shipmentStatus = queryStatusOrDefault(
             "select status from shipping.shipments where order_id = ?",
-            String.class,
-            orderId
+            orderId,
+            "NOT_STARTED"
         );
 
-        Long totalEventCount = jdbcTemplate.queryForObject(
+        long totalEventCount = queryCount(
             "select count(*) from outbox.outbox_event where aggregate_id = ?",
-            Long.class,
             orderId.toString()
         );
 
-        Long failedEventCount = jdbcTemplate.queryForObject(
+        long failedEventCount = queryCount(
             "select count(*) from outbox.outbox_event where aggregate_id = ? and status = 'FAILED'",
-            Long.class,
             orderId.toString()
         );
 
-        Long deadLetteredCount = 0L;
+        long deadLetteredCount = queryCount(
+            "select count(*) from outbox.outbox_event where aggregate_id = ? and status = 'DEAD_LETTER'",
+            orderId.toString()
+        );
 
         return new WorkflowStatusAggregateView(
             orderId.toString(),
@@ -123,8 +136,8 @@ public class JdbcOperationalInspectionRepository implements OperationalInspectio
             inventoryStatus,
             paymentStatus,
             shipmentStatus,
-            totalEventCount == null ? 0 : totalEventCount,
-            failedEventCount == null ? 0 : failedEventCount,
+            totalEventCount,
+            failedEventCount,
             deadLetteredCount
         );
     }
@@ -161,6 +174,11 @@ public class JdbcOperationalInspectionRepository implements OperationalInspectio
             Long.class
         );
 
+        Long deadLetteredOutboxEvents = jdbcTemplate.queryForObject(
+            "select count(*) from outbox.outbox_event where status = 'DEAD_LETTER'",
+            Long.class
+        );
+
         Long publishedEvents = jdbcTemplate.queryForObject(
             "select count(*) from outbox.outbox_event where status = 'PUBLISHED'",
             Long.class
@@ -173,26 +191,58 @@ public class JdbcOperationalInspectionRepository implements OperationalInspectio
             ordersFulfillmentRequested == null ? 0 : ordersFulfillmentRequested,
             pendingOutboxEvents == null ? 0 : pendingOutboxEvents,
             failedOutboxEvents == null ? 0 : failedOutboxEvents,
-            0L,
+            deadLetteredOutboxEvents == null ? 0 : deadLetteredOutboxEvents,
             publishedEvents == null ? 0 : publishedEvents
         );
     }
 
-    private FailedAsyncOperationView mapToFailedOperation(ResultSet rs, Object ignored) throws SQLException {
+    private FailedAsyncOperationView mapToFailedOperation(ResultSet rs) throws SQLException {
         JsonNode headers = parseHeaders(rs.getString("headers"));
+        String status = rs.getString("status");
+        boolean deadLettered = "DEAD_LETTER".equals(status);
+        String failureReason = rs.getString("last_error");
         return new FailedAsyncOperationView(
             rs.getString("id"),
             rs.getString("event_type"),
             rs.getString("aggregate_id"),
-            textOrNull(headers, "workflowId"),
-            "outbox-relay",
+            textOrNull(headers, COLUMN_WORKFLOW_ID),
+            nullableOrFallback(rs.getString("claimed_by"), "outbox-relay"),
             rs.getInt("retry_count"),
-            "Retry scheduled",
-            rs.getString("status"),
-            false,
+            nullableOrFallback(failureReason, deadLettered ? "Dead-lettered by outbox relay" : "Retry scheduled"),
+            status,
+            deadLettered,
+            rs.getInt("replay_count"),
+            rs.getString("replayed_by"),
+            toStringOrNull(rs.getTimestamp("replayed_at")),
             rs.getTimestamp("occurred_at").toString(),
-            rs.getTimestamp("next_retry_at") == null ? null : rs.getTimestamp("next_retry_at").toString()
+            toStringOrNull(rs.getTimestamp(COLUMN_NEXT_RETRY_AT))
         );
+    }
+
+    private String queryStatusOrDefault(String query, UUID orderId, String fallbackStatus) {
+        List<String> statuses = jdbcTemplate.query(
+            query,
+            (rs, rowNum) -> rs.getString(1),
+            orderId
+        );
+
+        if (statuses.isEmpty()) {
+            return fallbackStatus;
+        }
+
+        return nullableOrFallback(statuses.get(0), fallbackStatus);
+    }
+
+    private long queryCount(String query, String orderId) {
+        return jdbcTemplate.queryForObject(query, (rs, rowNum) -> rs.getLong(1), orderId);
+    }
+
+    private String nullableOrFallback(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
+    }
+
+    private String toStringOrNull(Timestamp timestamp) {
+        return timestamp == null ? null : timestamp.toString();
     }
 
     private JsonNode parseHeaders(String rawHeaders) {
@@ -203,9 +253,13 @@ public class JdbcOperationalInspectionRepository implements OperationalInspectio
         }
     }
 
-    private String textOrNull(JsonNode node, String fieldName) {
+    private static String textOrNull(JsonNode node, String fieldName) {
         JsonNode valueNode = node.path(fieldName);
         return valueNode.isMissingNode() || valueNode.isNull() ? null : valueNode.asText();
+    }
+
+    private static String workflowIdOrNull(JsonNode node) {
+        return textOrNull(node, COLUMN_WORKFLOW_ID);
     }
 
     private record WorkflowTimelineRowMapper(ObjectMapper objectMapper) implements RowMapper<WorkflowTimelineEventView> {
@@ -216,14 +270,14 @@ public class JdbcOperationalInspectionRepository implements OperationalInspectio
             return new WorkflowTimelineEventView(
                 rs.getObject("id", UUID.class),
                 rs.getString("event_type"),
-                textOrNull(headers, "workflowId"),
+                workflowIdOrNull(headers),
                 textOrNull(headers, "correlationId"),
                 textOrNull(headers, "causationId"),
                 rs.getString("status"),
                 rs.getInt("retry_count"),
                 toInstant(rs.getTimestamp("occurred_at")),
                 toInstant(rs.getTimestamp("published_at")),
-                toInstant(rs.getTimestamp("next_retry_at"))
+                toInstant(rs.getTimestamp(COLUMN_NEXT_RETRY_AT))
             );
         }
 

@@ -1,10 +1,14 @@
 drop schema if exists orders cascade;
 drop schema if exists shipping cascade;
 drop schema if exists outbox cascade;
+drop schema if exists messaging cascade;
+drop schema if exists inventory cascade;
 
 create schema orders;
 create schema shipping;
 create schema outbox;
+create schema messaging;
+create schema inventory;
 
 create table orders.orders (
     id uuid primary key,
@@ -47,7 +51,25 @@ create table outbox.outbox_event (
     status varchar(32) not null,
     occurred_at timestamp with time zone not null,
     published_at timestamp with time zone,
+    claimed_at timestamp with time zone,
+    claimed_by varchar(128),
     retry_count int not null default 0,
-    next_retry_at timestamp with time zone
+    next_retry_at timestamp with time zone,
+    last_error varchar(4000),
+    last_failed_at timestamp with time zone,
+    dead_lettered_at timestamp with time zone
 );
 
+create table messaging.processed_messages (
+    consumer_name varchar(128) not null,
+    message_id uuid not null,
+    processed_at timestamp with time zone not null,
+    constraint pk_messaging_processed_messages primary key (consumer_name, message_id)
+);
+
+create table inventory.processed_messages (
+    consumer_name varchar(128) not null,
+    message_id uuid not null,
+    processed_at timestamp with time zone not null,
+    constraint pk_inventory_processed_messages primary key (consumer_name, message_id)
+);

@@ -2,6 +2,7 @@ package com.management.eventdrivenordermanagementsystem.orders.interfaces.messag
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.management.eventdrivenordermanagementsystem.messaging.event.EventType;
+import com.management.eventdrivenordermanagementsystem.messaging.infrastructure.persistence.JdbcProcessedMessageStore;
 import com.management.eventdrivenordermanagementsystem.orders.application.MarkOrderCancelledUseCase;
 import com.management.eventdrivenordermanagementsystem.orders.application.MarkOrderConfirmedUseCase;
 import com.management.eventdrivenordermanagementsystem.orders.application.MarkOrderFulfillmentRequestedUseCase;
@@ -14,10 +15,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.UUID;
 
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class OrderWorkflowEventListenerTest {
 
@@ -26,6 +30,7 @@ class OrderWorkflowEventListenerTest {
     private MarkOrderConfirmedUseCase markConfirmedUseCase;
     private MarkOrderFulfillmentRequestedUseCase markFulfillmentRequestedUseCase;
     private MarkOrderCancelledUseCase markCancelledUseCase;
+    private JdbcProcessedMessageStore processedMessageStore;
     private OrderWorkflowEventListener listener;
 
     @BeforeEach
@@ -35,6 +40,7 @@ class OrderWorkflowEventListenerTest {
         markConfirmedUseCase = mock(MarkOrderConfirmedUseCase.class);
         markFulfillmentRequestedUseCase = mock(MarkOrderFulfillmentRequestedUseCase.class);
         markCancelledUseCase = mock(MarkOrderCancelledUseCase.class);
+        processedMessageStore = mock(JdbcProcessedMessageStore.class);
         listener = new OrderWorkflowEventListener(
             new ObjectMapper(),
             markInventoryReservationPendingUseCase,
@@ -42,6 +48,8 @@ class OrderWorkflowEventListenerTest {
             markConfirmedUseCase,
             markFulfillmentRequestedUseCase,
             markCancelledUseCase,
+            processedMessageStore,
+            new OrderConsumerFailureClassifier(),
             new SimpleMeterRegistry()
         );
     }
@@ -49,6 +57,8 @@ class OrderWorkflowEventListenerTest {
     @Test
     void orderConfirmedTriggersOrderConfirmationUseCase() {
         UUID orderId = UUID.randomUUID();
+        when(processedMessageStore.markProcessed(any(), any(), any(Instant.class))).thenReturn(true);
+
         listener.onMessage(consumerRecord(EventType.ORDER_CONFIRMED, orderId));
 
         verify(markConfirmedUseCase).execute(orderId);
@@ -57,6 +67,8 @@ class OrderWorkflowEventListenerTest {
     @Test
     void shipmentPreparationStartedTriggersFulfillmentRequestedUseCase() {
         UUID orderId = UUID.randomUUID();
+        when(processedMessageStore.markProcessed(any(), any(), any(Instant.class))).thenReturn(true);
+
         listener.onMessage(consumerRecord(EventType.SHIPMENT_PREPARATION_STARTED, orderId));
 
         verify(markFulfillmentRequestedUseCase).execute(orderId);
@@ -65,6 +77,8 @@ class OrderWorkflowEventListenerTest {
     @Test
     void orderCancelledTriggersCancellationUseCase() {
         UUID orderId = UUID.randomUUID();
+        when(processedMessageStore.markProcessed(any(), any(), any(Instant.class))).thenReturn(true);
+
         listener.onMessage(consumerRecord(EventType.ORDER_CANCELLED, orderId));
 
         verify(markCancelledUseCase).execute(orderId);
@@ -76,9 +90,8 @@ class OrderWorkflowEventListenerTest {
             """.formatted(orderId));
         RecordHeaders headers = new RecordHeaders();
         headers.add("eventType", eventType.name().getBytes(StandardCharsets.UTF_8));
+        headers.add("eventId", UUID.randomUUID().toString().getBytes(StandardCharsets.UTF_8));
         headers.forEach(header -> consumerRecord.headers().add(header));
         return consumerRecord;
     }
 }
-
-

@@ -39,7 +39,12 @@ create table outbox.outbox_event (
     status varchar(32) not null,
     occurred_at timestamp with time zone not null,
     published_at timestamp with time zone,
+    claimed_at timestamp with time zone,
+    claimed_by varchar(128),
     retry_count int not null default 0,
-    next_retry_at timestamp with time zone
+    next_retry_at timestamp with time zone,
+    last_error varchar(4000),
+    last_failed_at timestamp with time zone,
+    dead_lettered_at timestamp with time zone
 );
 

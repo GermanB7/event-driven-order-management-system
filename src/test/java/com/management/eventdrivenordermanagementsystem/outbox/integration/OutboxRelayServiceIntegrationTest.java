@@ -24,6 +24,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 @SpringBootTest(properties = {
     "outbox.relay.enabled=false",
     "outbox.relay.batch-size=10",
+    "outbox.relay.retry-delay=PT0S",
+    "outbox.relay.max-retries=2",
     "outbox.kafka.enabled=false"
 })
 @Sql(scripts = "classpath:sql/order-slice-schema.sql")
@@ -43,6 +45,7 @@ class OutboxRelayServiceIntegrationTest {
     @BeforeEach
     void setUp() {
         publisher.clear();
+        publisher.failAllPublishes(false);
         eventId = UUID.randomUUID();
         jdbcTemplate.update(
             """
@@ -81,6 +84,41 @@ class OutboxRelayServiceIntegrationTest {
         assertThat(publishedAt).isNotNull();
     }
 
+    @Test
+    void relayPendingEventsRetriesAndDeadLettersAfterRetryExhaustion() {
+        publisher.failAllPublishes(true);
+
+        relayService.relayPendingEvents();
+        relayService.relayPendingEvents();
+        relayService.relayPendingEvents();
+
+        String status = jdbcTemplate.queryForObject(
+            "select status from outbox.outbox_event where id = ?",
+            String.class,
+            eventId
+        );
+        Integer retryCount = jdbcTemplate.queryForObject(
+            "select retry_count from outbox.outbox_event where id = ?",
+            Integer.class,
+            eventId
+        );
+        Timestamp deadLetteredAt = jdbcTemplate.queryForObject(
+            "select dead_lettered_at from outbox.outbox_event where id = ?",
+            Timestamp.class,
+            eventId
+        );
+        String lastError = jdbcTemplate.queryForObject(
+            "select last_error from outbox.outbox_event where id = ?",
+            String.class,
+            eventId
+        );
+
+        assertThat(status).isEqualTo("DEAD_LETTER");
+        assertThat(retryCount).isEqualTo(3);
+        assertThat(deadLetteredAt).isNotNull();
+        assertThat(lastError).contains("forced publish failure");
+    }
+
     @TestConfiguration
     static class TestPublisherConfiguration {
 
@@ -94,9 +132,13 @@ class OutboxRelayServiceIntegrationTest {
     static class RecordingOutboxEventPublisher implements OutboxEventPublisher {
 
         private final List<UUID> publishedEventIds = new ArrayList<>();
+        private volatile boolean failAllPublishes;
 
         @Override
         public void publish(OutboxEventRecord event) {
+            if (failAllPublishes) {
+                throw new IllegalStateException("forced publish failure");
+            }
             publishedEventIds.add(event.id());
         }
 
@@ -106,6 +148,10 @@ class OutboxRelayServiceIntegrationTest {
 
         void clear() {
             publishedEventIds.clear();
+        }
+
+        void failAllPublishes(boolean failAllPublishes) {
+            this.failAllPublishes = failAllPublishes;
         }
     }
 }

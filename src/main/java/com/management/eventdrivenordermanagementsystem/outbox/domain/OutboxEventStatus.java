@@ -2,7 +2,9 @@ package com.management.eventdrivenordermanagementsystem.outbox.domain;
 
 public enum OutboxEventStatus {
     PENDING,
+    IN_PROGRESS,
     PUBLISHED,
-    FAILED
+    FAILED,
+    DEAD_LETTER
 }
 

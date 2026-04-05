@@ -1,6 +1,7 @@
 package com.management.eventdrivenordermanagementsystem.inventory.interfaces.messaging;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.management.eventdrivenordermanagementsystem.inventory.application.port.InventoryRepository;
 import com.management.eventdrivenordermanagementsystem.messaging.application.OutboxEventWriter;
 import com.management.eventdrivenordermanagementsystem.messaging.event.EventEnvelope;
 import com.management.eventdrivenordermanagementsystem.messaging.event.EventType;
@@ -10,22 +11,37 @@ import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.dao.TransientDataAccessResourceException;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class InventoryReleaseRequestedListenerTest {
 
+    private InventoryRepository inventoryRepository;
     private OutboxEventWriter outboxEventWriter;
     private InventoryReleaseRequestedListener listener;
 
     @BeforeEach
     void setUp() {
+        inventoryRepository = mock(InventoryRepository.class);
         outboxEventWriter = mock(OutboxEventWriter.class);
-        listener = new InventoryReleaseRequestedListener(new ObjectMapper(), outboxEventWriter, new SimpleMeterRegistry());
+        listener = new InventoryReleaseRequestedListener(
+            new ObjectMapper(),
+            inventoryRepository,
+            outboxEventWriter,
+            new InventoryConsumerFailureClassifier(),
+            new SimpleMeterRegistry()
+        );
     }
 
     @Test
@@ -45,8 +61,11 @@ class InventoryReleaseRequestedListenerTest {
         headers.add("eventId", "8e4725ea-c3a6-4f6b-b22f-7b8f8ac3b39b".getBytes(StandardCharsets.UTF_8));
         headers.forEach(header -> record.headers().add(header));
 
+        when(inventoryRepository.markMessageProcessed(any(), any(), any(Instant.class))).thenReturn(true);
+
         listener.onMessage(record);
 
+        verify(inventoryRepository).markMessageProcessed(any(), any(), any(Instant.class));
         ArgumentCaptor<EventEnvelope> captor = ArgumentCaptor.forClass(EventEnvelope.class);
         verify(outboxEventWriter).write(captor.capture());
 
@@ -57,5 +76,57 @@ class InventoryReleaseRequestedListenerTest {
         assertThat(emitted.correlationId()).isEqualTo("corr-701");
         assertThat(emitted.payload().path("inventoryStatus").asText()).isEqualTo("RELEASED");
     }
-}
 
+    @Test
+    void duplicateMessageIsIgnored() {
+        ConsumerRecord<String, String> record = validRecord();
+        when(inventoryRepository.markMessageProcessed(any(), any(), any(Instant.class))).thenReturn(false);
+
+        listener.onMessage(record);
+
+        verify(outboxEventWriter, never()).write(any());
+    }
+
+    @Test
+    void malformedPayloadIsClassifiedAsNonRetryable() {
+        ConsumerRecord<String, String> record = new ConsumerRecord<>("order-events", 0, 0L, "key", "{invalid-json");
+        RecordHeaders headers = new RecordHeaders();
+        headers.add("eventType", EventType.INVENTORY_RELEASE_REQUESTED.name().getBytes(StandardCharsets.UTF_8));
+        headers.add("eventId", UUID.randomUUID().toString().getBytes(StandardCharsets.UTF_8));
+        headers.forEach(header -> record.headers().add(header));
+
+        assertThatThrownBy(() -> listener.onMessage(record))
+            .isInstanceOf(NonRetryableInventoryMessageException.class);
+
+        verify(outboxEventWriter, never()).write(any());
+    }
+
+    @Test
+    void transientRepositoryFailureIsClassifiedAsRetryable() {
+        ConsumerRecord<String, String> record = validRecord();
+        when(inventoryRepository.markMessageProcessed(any(), any(), any(Instant.class)))
+            .thenThrow(new TransientDataAccessResourceException("database unavailable"));
+
+        assertThatThrownBy(() -> listener.onMessage(record))
+            .isInstanceOf(RetryableInventoryMessageException.class);
+
+        verify(outboxEventWriter, never()).write(any());
+    }
+
+    private ConsumerRecord<String, String> validRecord() {
+        ConsumerRecord<String, String> record = new ConsumerRecord<>(
+            "order-events",
+            0,
+            0L,
+            "key",
+            """
+                {"orderId": "8f3eec6f-c5d0-4d4b-9c44-a718ee05553b", "workflowId": "wf-701", "correlationId": "corr-701"}
+                """
+        );
+        RecordHeaders headers = new RecordHeaders();
+        headers.add("eventType", EventType.INVENTORY_RELEASE_REQUESTED.name().getBytes(StandardCharsets.UTF_8));
+        headers.add("eventId", UUID.randomUUID().toString().getBytes(StandardCharsets.UTF_8));
+        headers.forEach(header -> record.headers().add(header));
+        return record;
+    }
+}

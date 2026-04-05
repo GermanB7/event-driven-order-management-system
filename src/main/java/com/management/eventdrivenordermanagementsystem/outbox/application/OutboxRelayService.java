@@ -27,8 +27,12 @@ public class OutboxRelayService {
     private final Clock clock;
     private final int batchSize;
     private final Duration retryDelay;
+    private final Duration claimTtl;
+    private final int maxRetries;
+    private final String relayInstanceId;
     private final Counter publishSuccessCounter;
     private final Counter publishFailureCounter;
+    private final Counter deadLetterCounter;
 
     @Autowired
     public OutboxRelayService(
@@ -36,9 +40,12 @@ public class OutboxRelayService {
         OutboxEventPublisher publisher,
         MeterRegistry meterRegistry,
         @Value("${outbox.relay.batch-size:50}") int batchSize,
-        @Value("${outbox.relay.retry-delay:PT30S}") Duration retryDelay
+        @Value("${outbox.relay.retry-delay:PT30S}") Duration retryDelay,
+        @Value("${outbox.relay.claim-ttl:PT30S}") Duration claimTtl,
+        @Value("${outbox.relay.max-retries:5}") int maxRetries,
+        @Value("${outbox.relay.instance-id:${spring.application.name:outbox-relay}}") String relayInstanceId
     ) {
-        this(repository, publisher, meterRegistry, Clock.systemUTC(), batchSize, retryDelay);
+        this(repository, publisher, meterRegistry, Clock.systemUTC(), batchSize, retryDelay, claimTtl, maxRetries, relayInstanceId);
     }
 
     OutboxRelayService(
@@ -47,27 +54,48 @@ public class OutboxRelayService {
         MeterRegistry meterRegistry,
         Clock clock,
         int batchSize,
-        Duration retryDelay
+        Duration retryDelay,
+        Duration claimTtl,
+        int maxRetries,
+        String relayInstanceId
     ) {
         this.repository = repository;
         this.publisher = publisher;
         this.clock = clock;
         this.batchSize = batchSize;
         this.retryDelay = retryDelay;
+        this.claimTtl = claimTtl;
+        this.maxRetries = maxRetries;
+        this.relayInstanceId = relayInstanceId;
         this.publishSuccessCounter = meterRegistry.counter("outbox.publish.success");
         this.publishFailureCounter = meterRegistry.counter("outbox.publish.failure");
+        this.deadLetterCounter = meterRegistry.counter("outbox.dead_letter.count");
         Gauge.builder("outbox.pending.count", () -> this.repository.countPending(this.clock.instant()))
             .register(meterRegistry);
     }
 
     public void relayPendingEvents() {
-        List<OutboxEventRecord> pendingEvents = repository.findPendingForPublish(batchSize, clock.instant());
+        Instant now = clock.instant();
+        Instant staleClaimBefore = now.minus(claimTtl);
+        List<OutboxEventRecord> pendingEvents = repository.findPendingForPublish(batchSize, now, staleClaimBefore);
         for (OutboxEventRecord event : pendingEvents) {
-            relaySingleEvent(event);
+            relaySingleEvent(event, now, staleClaimBefore);
         }
     }
 
-    private void relaySingleEvent(OutboxEventRecord event) {
+    private void relaySingleEvent(OutboxEventRecord event, Instant now, Instant staleClaimBefore) {
+        boolean claimed = repository.claimForPublish(event.id(), now, staleClaimBefore, now, relayInstanceId);
+        if (!claimed) {
+            log.debug(
+                "outbox_publish_skipped_not_claimed eventId={} aggregateId={} eventType={} retryCount={}",
+                event.id(),
+                event.aggregateId(),
+                event.eventType(),
+                event.retryCount()
+            );
+            return;
+        }
+
         log.info(
             "outbox_publish_started eventId={} aggregateId={} eventType={} retryCount={}",
             event.id(),
@@ -80,7 +108,15 @@ public class OutboxRelayService {
             publisher.publish(event);
 
             Instant publishedAt = clock.instant();
-            repository.markPublished(event.id(), publishedAt);
+            if (!repository.markPublished(event.id(), publishedAt)) {
+                log.warn(
+                    "outbox_mark_published_skipped_invalid_state eventId={} aggregateId={} eventType={}",
+                    event.id(),
+                    event.aggregateId(),
+                    event.eventType()
+                );
+                return;
+            }
             publishSuccessCounter.increment();
 
             log.info(
@@ -93,8 +129,50 @@ public class OutboxRelayService {
             );
         } catch (RuntimeException exception) {
             int nextRetryCount = event.retryCount() + 1;
-            Instant nextRetryAt = clock.instant().plus(retryDelay);
-            repository.markFailedForRetry(event.id(), nextRetryCount, nextRetryAt);
+            String lastError = abbreviateError(exception);
+            Instant failedAt = clock.instant();
+
+            if (nextRetryCount > maxRetries) {
+                boolean deadLettered = repository.markDeadLettered(event.id(), nextRetryCount, lastError, failedAt);
+                if (deadLettered) {
+                    deadLetterCounter.increment();
+                    log.error(
+                        "outbox_publish_dead_lettered eventId={} aggregateId={} eventType={} retryCount={} maxRetries={} deadLetteredAt={} lastError={}",
+                        event.id(),
+                        event.aggregateId(),
+                        event.eventType(),
+                        nextRetryCount,
+                        maxRetries,
+                        failedAt,
+                        lastError,
+                        exception
+                    );
+                } else {
+                    log.warn(
+                        "outbox_mark_dead_lettered_skipped_invalid_state eventId={} aggregateId={} eventType={} retryCount={}",
+                        event.id(),
+                        event.aggregateId(),
+                        event.eventType(),
+                        nextRetryCount,
+                        exception
+                    );
+                }
+                return;
+            }
+
+            Instant nextRetryAt = failedAt.plus(retryDelay);
+            boolean failed = repository.markFailedForRetry(event.id(), nextRetryCount, nextRetryAt, lastError, failedAt);
+            if (!failed) {
+                log.warn(
+                    "outbox_mark_failed_skipped_invalid_state eventId={} aggregateId={} eventType={} retryCount={}",
+                    event.id(),
+                    event.aggregateId(),
+                    event.eventType(),
+                    nextRetryCount,
+                    exception
+                );
+                return;
+            }
             publishFailureCounter.increment();
 
             log.warn(
@@ -107,5 +185,11 @@ public class OutboxRelayService {
                 exception
             );
         }
+    }
+
+    private String abbreviateError(RuntimeException exception) {
+        String message = exception.getMessage();
+        String normalized = message == null ? exception.getClass().getSimpleName() : message;
+        return normalized.length() <= 500 ? normalized : normalized.substring(0, 500);
     }
 }
