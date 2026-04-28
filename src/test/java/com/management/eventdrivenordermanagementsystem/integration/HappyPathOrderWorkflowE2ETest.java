@@ -1,51 +1,35 @@
 package com.management.eventdrivenordermanagementsystem.integration;
 
-import com.management.eventdrivenordermanagementsystem.messaging.event.EventType;
 import com.management.eventdrivenordermanagementsystem.inventory.domain.InventoryReservationStatus;
+import com.management.eventdrivenordermanagementsystem.messaging.event.EventType;
 import com.management.eventdrivenordermanagementsystem.orders.domain.OrderStatus;
-import com.management.eventdrivenordermanagementsystem.support.WorkflowE2ETestSupport;
-import com.management.eventdrivenordermanagementsystem.support.EmbeddedKafkaTestConfiguration;
 import com.management.eventdrivenordermanagementsystem.payments.domain.PaymentStatus;
 import com.management.eventdrivenordermanagementsystem.shipping.domain.ShipmentStatus;
+import com.management.eventdrivenordermanagementsystem.support.EmbeddedKafkaTestConfiguration;
+import com.management.eventdrivenordermanagementsystem.support.KafkaListenerAutoStartTestConfig;
+import com.management.eventdrivenordermanagementsystem.support.WorkflowE2ETestSupport;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.kafka.test.context.EmbeddedKafka;
+import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.jdbc.Sql;
 
 import java.util.UUID;
 
 /**
- * END-TO-END PRODUCTION-GRADE WORKFLOW TEST
- * 
- * This test validates the complete event-driven order management workflow
- * across the entire async chain with real infrastructure:
- * 
- * Flow: API → Outbox → Relay → Kafka → Async Consumers → State Transitions
- * 
- * Happy Path Validation:
- * 1. Order created via real REST API (POST /api/orders)
- * 2. Order persisted with status CREATED
- * 3. Outbox event written transactionally (ORDER_CREATED)
- * 4. OutboxRelayService publishes to Kafka
- * 5. OrderCreatedWorkflowListener consumes → emits INVENTORY_RESERVATION_REQUESTED
- * 6. InventoryReservationRequestedListener reserves inventory → INVENTORY_RESERVED
- * 7. OrderWorkflowEventListener → emits PAYMENT_AUTHORIZATION_REQUESTED
- * 8. PaymentAuthorizationRequestedListener authorizes → PAYMENT_AUTHORIZED
- * 9. OrderWorkflowEventListener → emits ORDER_CONFIRMED
- * 10. ShipmentPreparationRequestedWorkflowListener → SHIPMENT_PREPARATION_STARTED
- * 
- * This test uses:
- * - EmbeddedKafka for realistic async message broker behavior
- * - Polling-based assertions for eventual consistency
- * - Repository queries for persisted state validation
- * - Real HTTP entry point through MockMvc
- * 
- * NOT a slice test. NOT a listener-direct test. NOT stubbed async flow.
- * This is real end-to-end workflow evidence.
- * 
- * @see WorkflowE2ETestSupport for polling and assertion helpers
+ * First honest end-to-end happy-path workflow test.
+ *
+ * This test validates that a real order flows through the complete async workflow
+ * using actual infrastructure:
+ *
+ * Entry point -> transactional outbox -> outbox relay -> real Kafka broker ->
+ * Kafka listeners -> database state changes -> workflow completion.
+ *
+ * This test intentionally does not call listeners directly, fabricate
+ * ConsumerRecord instances, bypass Kafka, or bypass the outbox relay.
  */
+@ActiveProfiles("e2e-test")
 @EmbeddedKafka(partitions = 3, topics = {
     "order-events",
     "order-events.payment.dlq",
@@ -55,7 +39,10 @@ import java.util.UUID;
     "order-events.workflow.dlq",
     "order-events.orders.dlq"
 })
-@Import(EmbeddedKafkaTestConfiguration.class)
+@Import({
+    EmbeddedKafkaTestConfiguration.class,
+    KafkaListenerAutoStartTestConfig.class
+})
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.MOCK, properties = {
     "outbox.relay.enabled=false",
     "outbox.kafka.enabled=true",
@@ -63,13 +50,14 @@ import java.util.UUID;
     "spring.kafka.bootstrap-servers=${spring.embedded.kafka.brokers}"
 })
 @Sql(scripts = "classpath:sql/e2e-workflow-schema.sql")
-class FulfillmentWorkflowIntegrationTest extends WorkflowE2ETestSupport {
+class HappyPathOrderWorkflowE2ETest extends WorkflowE2ETestSupport {
 
     @Test
-    void createOrderCompletesTheHappyPathAcrossOutboxKafkaAndWorkflowChain() {
+    void orderFlowsCompletelyThroughAsyncWorkflowChainToFulfillment() {
         UUID orderId = createOrder();
 
         awaitOrderStatus(orderId, OrderStatus.FULFILLMENT_REQUESTED.name());
+
         awaitInventoryReservationStatus(orderId, InventoryReservationStatus.RESERVED.name());
         awaitPaymentStatus(orderId, PaymentStatus.AUTHORIZED.name());
         awaitShipmentStatus(orderId, ShipmentStatus.PREPARING.name());
@@ -84,8 +72,3 @@ class FulfillmentWorkflowIntegrationTest extends WorkflowE2ETestSupport {
         assertOutboxPublished(orderId, EventType.SHIPMENT_PREPARATION_STARTED.name());
     }
 }
-
-
-
-
-

@@ -53,12 +53,22 @@ public class OrderCreatedWorkflowListener {
         this.failedCounter = meterRegistry.counter("workflow.order.created.failed");
     }
 
+    private String topicName() {
+        return "${outbox.kafka.topic.order-events:order-events}";
+    }
+
+    @jakarta.annotation.PostConstruct
+    private void init() {
+        log.info("OrderCreatedWorkflowListener initialized and ready to consume topic='{}' with consumerName={}", topicName(), CONSUMER_NAME);
+    }
+
     @KafkaListener(
         topics = "${outbox.kafka.topic.order-events:order-events}",
         groupId = "workflow-order-created-listener",
         containerFactory = "workflowKafkaListenerContainerFactory"
     )
     public void onMessage(ConsumerRecord<String, String> consumerRecord) {
+        log.debug("OrderCreatedWorkflowListener.onMessage called headers={} key={} partition={} offset={}", consumerRecord.headers(), consumerRecord.key(), consumerRecord.partition(), consumerRecord.offset());
         String eventType = header(consumerRecord, "eventType");
         if (!EventType.ORDER_CREATED.name().equals(eventType)) {
             return;
@@ -137,6 +147,8 @@ public class OrderCreatedWorkflowListener {
         payload.put("workflowId", workflowId);
         payload.put("correlationId", correlationId);
         payload.put("causationId", causationId);
+        payload.set("totalAmount", orderCreatedPayload.path("totalAmount"));
+        payload.put("currency", orderCreatedPayload.path("currency").asText());
 
         ArrayNode requestedItems = payload.putArray("items");
         JsonNode sourceItems = orderCreatedPayload.path("items");

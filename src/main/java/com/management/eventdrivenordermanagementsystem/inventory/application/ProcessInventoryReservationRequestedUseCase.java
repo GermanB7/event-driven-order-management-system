@@ -205,6 +205,8 @@ public class ProcessInventoryReservationRequestedUseCase {
         payload.put("correlationId", command.correlationId());
         payload.put("causationId", command.causationId());
         payload.put("inventoryStatus", inventoryStatus);
+        payload.put("totalAmount", command.totalAmount());
+        payload.put("currency", command.currency());
         return payload;
     }
 }

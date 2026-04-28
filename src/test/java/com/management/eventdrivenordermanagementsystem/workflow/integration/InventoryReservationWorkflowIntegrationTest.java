@@ -18,6 +18,32 @@ import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+/**
+ * LISTENER SLICE TEST (NOT END-TO-END)
+ * 
+ * WARNING: This is a narrow slice test that calls listeners directly
+ * with fabricated ConsumerRecords. It does NOT exercise real Kafka
+ * or the full async workflow chain.
+ * 
+ * This test validates:
+ * - Individual listener business logic in isolation
+ * - Direct method call behavior
+ * - Outbox event generation at the listener level
+ * 
+ * What this test does NOT validate:
+ * ✗ Real Kafka message flow
+ * ✗ Full workflow chain (API → Outbox → Relay → Kafka → Consumers)
+ * ✗ End-to-end state consistency
+ * ✗ Async message propagation
+ * 
+ * For real end-to-end evidence, see:
+ * - com.management.eventdrivenordermanagementsystem.integration.FulfillmentWorkflowIntegrationTest
+ * - com.management.eventdrivenordermanagementsystem.integration.PaymentFailureCompensationIntegrationTest
+ * - com.management.eventdrivenordermanagementsystem.integration.IdempotencyE2EIntegrationTest
+ * 
+ * This test exists for fine-grained listener behavior validation only.
+ * Do NOT treat this as evidence that the workflow works end-to-end.
+ */
 @SpringBootTest(properties = {
     "outbox.relay.enabled=false",
     "outbox.kafka.enabled=false"

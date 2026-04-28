@@ -1,5 +1,6 @@
 package com.management.eventdrivenordermanagementsystem.inventory.application.dto;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
@@ -11,6 +12,8 @@ public record InventoryReservationRequestedCommand(
     String correlationId,
     String causationId,
     Instant occurredAt,
+    BigDecimal totalAmount,
+    String currency,
     List<RequestedItem> items
 ) {
 
@@ -32,6 +35,12 @@ public record InventoryReservationRequestedCommand(
         }
         if (occurredAt == null) {
             throw new IllegalArgumentException("Inventory reservation occurredAt must be present");
+        }
+        if (totalAmount == null || totalAmount.signum() <= 0) {
+            throw new IllegalArgumentException("Inventory reservation totalAmount must be > 0");
+        }
+        if (currency == null || currency.isBlank()) {
+            throw new IllegalArgumentException("Inventory reservation currency must be present");
         }
         items = items == null ? List.of() : List.copyOf(items);
     }

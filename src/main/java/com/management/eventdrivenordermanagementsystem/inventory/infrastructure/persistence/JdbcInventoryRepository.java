@@ -12,6 +12,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -74,6 +75,44 @@ public class JdbcInventoryRepository implements InventoryRepository {
     }
 
     @Override
+    public List<InventoryReservation> findReservationsByOrderId(UUID orderId) {
+        return jdbcTemplate.query(
+            """
+                select id, order_id, sku, quantity, status, created_at, updated_at
+                from inventory.inventory_reservations
+                where order_id = ?
+                """,
+            (ResultSet rs, int rowNum) -> mapInventoryReservation(rs),
+            orderId
+        );
+    }
+
+    @Override
+    public InventoryReservation updateReservationStatus(UUID reservationId, InventoryReservationStatus status, Instant updatedAt) {
+        jdbcTemplate.update(
+            """
+                update inventory.inventory_reservations
+                set status = ?,
+                    updated_at = ?
+                where id = ?
+                """,
+            status.name(),
+            Timestamp.from(updatedAt),
+            reservationId
+        );
+
+        return jdbcTemplate.queryForObject(
+            """
+                select id, order_id, sku, quantity, status, created_at, updated_at
+                from inventory.inventory_reservations
+                where id = ?
+                """,
+            (ResultSet rs, int rowNum) -> mapInventoryReservation(rs),
+            reservationId
+        );
+    }
+
+    @Override
     public boolean markMessageProcessed(String consumerName, UUID messageId, Instant processedAt) {
         try {
             jdbcTemplate.update(
@@ -100,7 +139,6 @@ public class JdbcInventoryRepository implements InventoryRepository {
         );
     }
 
-    @SuppressWarnings("unused")
     private InventoryReservation mapInventoryReservation(ResultSet rs) throws SQLException {
         return new InventoryReservation(
             rs.getObject("id", UUID.class),

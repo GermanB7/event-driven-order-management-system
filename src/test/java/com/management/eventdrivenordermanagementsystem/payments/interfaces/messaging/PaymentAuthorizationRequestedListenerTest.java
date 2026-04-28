@@ -43,7 +43,8 @@ class PaymentAuthorizationRequestedListenerTest {
             paymentRepository,
             outboxEventWriter,
             new PaymentConsumerFailureClassifier(),
-            new SimpleMeterRegistry()
+            new SimpleMeterRegistry(),
+            new BigDecimal("999999999999.99")
         );
     }
 
@@ -80,6 +81,51 @@ class PaymentAuthorizationRequestedListenerTest {
         assertThat(emitted.eventType()).isEqualTo(EventType.PAYMENT_AUTHORIZED);
         assertThat(emitted.aggregateId()).isEqualTo(orderId.toString());
         assertThat(emitted.payload().path("paymentStatus").asText()).isEqualTo(PaymentStatus.AUTHORIZED.name());
+    }
+
+    @Test
+    void paymentAuthorizationAboveConfiguredThresholdEmitsPaymentFailedEvent() {
+        UUID orderId = UUID.randomUUID();
+        listener = new PaymentAuthorizationRequestedListener(
+            new ObjectMapper(),
+            paymentRepository,
+            outboxEventWriter,
+            new PaymentConsumerFailureClassifier(),
+            new SimpleMeterRegistry(),
+            new BigDecimal("15.00")
+        );
+        String payload = """
+            {
+              "orderId": "%s",
+              "workflowId": "wf-503",
+              "correlationId": "corr-503",
+              "amount": 20.00,
+              "currency": "USD"
+            }
+            """.formatted(orderId);
+
+        ConsumerRecord<String, String> record = new ConsumerRecord<>("order-events", 0, 0L, orderId.toString(), payload);
+        RecordHeaders headers = new RecordHeaders();
+        headers.add("eventType", EventType.PAYMENT_AUTHORIZATION_REQUESTED.name().getBytes(StandardCharsets.UTF_8));
+        headers.add("eventId", UUID.randomUUID().toString().getBytes(StandardCharsets.UTF_8));
+        headers.forEach(header -> record.headers().add(header));
+
+        when(paymentRepository.findByOrderId(orderId)).thenReturn(Optional.empty());
+        when(paymentRepository.save(any(Payment.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        listener.onMessage(record);
+
+        org.mockito.ArgumentCaptor<Payment> paymentCaptor = org.mockito.ArgumentCaptor.forClass(Payment.class);
+        verify(paymentRepository).save(paymentCaptor.capture());
+        assertThat(paymentCaptor.getValue().status()).isEqualTo(PaymentStatus.FAILED);
+
+        org.mockito.ArgumentCaptor<EventEnvelope> envelopeCaptor = org.mockito.ArgumentCaptor.forClass(EventEnvelope.class);
+        verify(outboxEventWriter).write(envelopeCaptor.capture());
+        EventEnvelope emitted = envelopeCaptor.getValue();
+
+        assertThat(emitted.eventType()).isEqualTo(EventType.PAYMENT_FAILED);
+        assertThat(emitted.payload().path("paymentStatus").asText()).isEqualTo(PaymentStatus.FAILED.name());
+        assertThat(emitted.payload().path("reason").asText()).isEqualTo("PAYMENT_PROVIDER_DECLINED");
     }
 
     @Test

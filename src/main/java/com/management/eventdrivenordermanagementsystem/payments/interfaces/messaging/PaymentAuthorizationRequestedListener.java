@@ -16,6 +16,7 @@ import org.apache.kafka.common.header.Header;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -38,18 +39,21 @@ public class PaymentAuthorizationRequestedListener {
     private final Counter acceptedCounter;
     private final Counter duplicateCounter;
     private final Counter failedCounter;
+    private final BigDecimal failAboveAmount;
 
     public PaymentAuthorizationRequestedListener(
         ObjectMapper objectMapper,
         PaymentRepository paymentRepository,
         OutboxEventWriter outboxEventWriter,
         PaymentConsumerFailureClassifier failureClassifier,
-        MeterRegistry meterRegistry
+        MeterRegistry meterRegistry,
+        @Value("${payments.authorization.fail-above-amount:999999999999.99}") BigDecimal failAboveAmount
     ) {
         this.objectMapper = objectMapper;
         this.paymentRepository = paymentRepository;
         this.outboxEventWriter = outboxEventWriter;
         this.failureClassifier = failureClassifier;
+        this.failAboveAmount = failAboveAmount;
         this.acceptedCounter = meterRegistry.counter("payments.authorization.request.accepted");
         this.duplicateCounter = meterRegistry.counter("payments.authorization.request.duplicate");
         this.failedCounter = meterRegistry.counter("payments.authorization.request.failed");
@@ -191,7 +195,9 @@ public class PaymentAuthorizationRequestedListener {
     }
 
     private boolean shouldFailAuthorization(JsonNode sourcePayload) {
-        return sourcePayload.path("forceFailure").asBoolean(false);
+        BigDecimal amount = sourcePayload.path("amount").decimalValue();
+        return sourcePayload.path("forceFailure").asBoolean(false)
+            || amount.compareTo(failAboveAmount) > 0;
     }
 
     private String header(ConsumerRecord<String, String> record, String key) {

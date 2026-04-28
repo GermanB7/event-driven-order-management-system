@@ -38,5 +38,19 @@ public record InventoryItem(
 
         return new InventoryItem(sku, availableQuantity - quantity, reservedQuantity + quantity, now);
     }
+
+    public InventoryItem release(int quantity, Instant now) {
+        if (quantity <= 0) {
+            throw new InventoryDomainException("Inventory release quantity must be > 0");
+        }
+        if (now == null) {
+            throw new InventoryDomainException("Inventory updatedAt must be present");
+        }
+        if (reservedQuantity < quantity) {
+            throw new InventoryDomainException("Reserved inventory is insufficient for sku " + sku);
+        }
+
+        return new InventoryItem(sku, availableQuantity + quantity, reservedQuantity - quantity, now);
+    }
 }
 

@@ -72,6 +72,8 @@ public class InventoryReservationRequestedListener {
                     correlationId,
                     causationId,
                     Instant.now(),
+                    payload.path("totalAmount").decimalValue(),
+                    payload.path("currency").asText(),
                     parseItems(payload.path("items"))
                 )
             );

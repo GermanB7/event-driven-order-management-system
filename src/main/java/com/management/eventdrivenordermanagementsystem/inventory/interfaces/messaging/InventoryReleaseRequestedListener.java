@@ -4,6 +4,9 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.management.eventdrivenordermanagementsystem.inventory.application.port.InventoryRepository;
+import com.management.eventdrivenordermanagementsystem.inventory.domain.InventoryItem;
+import com.management.eventdrivenordermanagementsystem.inventory.domain.InventoryReservation;
+import com.management.eventdrivenordermanagementsystem.inventory.domain.InventoryReservationStatus;
 import com.management.eventdrivenordermanagementsystem.messaging.application.OutboxEventWriter;
 import com.management.eventdrivenordermanagementsystem.messaging.event.EventEnvelope;
 import com.management.eventdrivenordermanagementsystem.messaging.event.EventType;
@@ -15,9 +18,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.List;
 import java.util.UUID;
 
 @Component
@@ -58,6 +63,7 @@ public class InventoryReleaseRequestedListener {
         groupId = "inventory-release-requested-listener",
         containerFactory = "inventoryReleaseKafkaListenerContainerFactory"
     )
+    @Transactional
     public void onMessage(ConsumerRecord<String, String> record) {
         String eventType = header(record, "eventType");
         if (!EventType.INVENTORY_RELEASE_REQUESTED.name().equals(eventType)) {
@@ -94,6 +100,7 @@ public class InventoryReleaseRequestedListener {
             }
 
             releaseRequestedCounter.increment();
+            releaseReservedInventory(UUID.fromString(orderId));
 
             EventEnvelope envelope = new EventEnvelope(
                 UUID.randomUUID(),
@@ -132,6 +139,21 @@ public class InventoryReleaseRequestedListener {
                 exception.getClass().getSimpleName()
             );
             throw classified;
+        }
+    }
+
+    private void releaseReservedInventory(UUID orderId) {
+        Instant now = Instant.now();
+        List<InventoryReservation> reservations = inventoryRepository.findReservationsByOrderId(orderId);
+        for (InventoryReservation reservation : reservations) {
+            if (reservation.status() != InventoryReservationStatus.RESERVED) {
+                continue;
+            }
+
+            InventoryItem stockItem = inventoryRepository.findItemBySku(reservation.sku())
+                .orElseThrow(() -> new IllegalStateException("Inventory item not found for sku " + reservation.sku()));
+            inventoryRepository.saveItem(stockItem.release(reservation.quantity(), now));
+            inventoryRepository.updateReservationStatus(reservation.id(), InventoryReservationStatus.RELEASED, now);
         }
     }
 

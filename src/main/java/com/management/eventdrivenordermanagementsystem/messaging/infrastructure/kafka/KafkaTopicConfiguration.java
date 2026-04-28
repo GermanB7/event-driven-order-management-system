@@ -10,6 +10,14 @@ import org.springframework.kafka.config.TopicBuilder;
 public class KafkaTopicConfiguration {
 
     @Bean
+    NewTopic orderEventsTopic(
+        @Value("${outbox.kafka.topic.order-events:order-events}") String topic,
+        @Value("${kafka.topic.default-partitions:3}") int partitions
+    ) {
+        return TopicBuilder.name(topic).partitions(partitions).replicas(1).build();
+    }
+
+    @Bean
     NewTopic paymentDlqTopic(
         @Value("${payment.kafka.dlq.topic:order-events.payment.dlq}") String topic,
         @Value("${kafka.topic.default-partitions:3}") int partitions

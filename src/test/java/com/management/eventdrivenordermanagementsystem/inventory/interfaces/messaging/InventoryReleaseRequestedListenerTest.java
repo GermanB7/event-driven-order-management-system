@@ -2,6 +2,9 @@ package com.management.eventdrivenordermanagementsystem.inventory.interfaces.mes
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.management.eventdrivenordermanagementsystem.inventory.application.port.InventoryRepository;
+import com.management.eventdrivenordermanagementsystem.inventory.domain.InventoryItem;
+import com.management.eventdrivenordermanagementsystem.inventory.domain.InventoryReservation;
+import com.management.eventdrivenordermanagementsystem.inventory.domain.InventoryReservationStatus;
 import com.management.eventdrivenordermanagementsystem.messaging.application.OutboxEventWriter;
 import com.management.eventdrivenordermanagementsystem.messaging.event.EventEnvelope;
 import com.management.eventdrivenordermanagementsystem.messaging.event.EventType;
@@ -15,6 +18,8 @@ import org.springframework.dao.TransientDataAccessResourceException;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -46,6 +51,16 @@ class InventoryReleaseRequestedListenerTest {
 
     @Test
     void inventoryReleaseRequestedEmitsInventoryReleasedEvent() {
+        UUID orderId = UUID.fromString("8f3eec6f-c5d0-4d4b-9c44-a718ee05553b");
+        UUID reservationId = UUID.randomUUID();
+        InventoryReservation reservation = InventoryReservation.reserved(
+            reservationId,
+            orderId,
+            "SKU-1",
+            2,
+            Instant.parse("2026-04-01T10:00:00Z")
+        );
+        InventoryItem stockItem = InventoryItem.create("SKU-1", 8, 2, Instant.parse("2026-04-01T10:00:00Z"));
         String payload = """
             {
               "orderId": "8f3eec6f-c5d0-4d4b-9c44-a718ee05553b",
@@ -62,10 +77,20 @@ class InventoryReleaseRequestedListenerTest {
         headers.forEach(header -> record.headers().add(header));
 
         when(inventoryRepository.markMessageProcessed(any(), any(), any(Instant.class))).thenReturn(true);
+        when(inventoryRepository.findReservationsByOrderId(orderId)).thenReturn(List.of(reservation));
+        when(inventoryRepository.findItemBySku("SKU-1")).thenReturn(Optional.of(stockItem));
+        when(inventoryRepository.saveItem(any(InventoryItem.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(inventoryRepository.updateReservationStatus(any(), any(), any())).thenAnswer(invocation -> reservation);
 
         listener.onMessage(record);
 
         verify(inventoryRepository).markMessageProcessed(any(), any(), any(Instant.class));
+        ArgumentCaptor<InventoryItem> stockCaptor = ArgumentCaptor.forClass(InventoryItem.class);
+        verify(inventoryRepository).saveItem(stockCaptor.capture());
+        assertThat(stockCaptor.getValue().availableQuantity()).isEqualTo(10);
+        assertThat(stockCaptor.getValue().reservedQuantity()).isZero();
+        verify(inventoryRepository).updateReservationStatus(reservationId, InventoryReservationStatus.RELEASED, stockCaptor.getValue().updatedAt());
+
         ArgumentCaptor<EventEnvelope> captor = ArgumentCaptor.forClass(EventEnvelope.class);
         verify(outboxEventWriter).write(captor.capture());
 

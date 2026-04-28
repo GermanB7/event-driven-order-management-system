@@ -72,12 +72,22 @@ public class OrderWorkflowEventListener {
         this.failedCounter = meterRegistry.counter("orders.workflow.failed");
     }
 
+    private String topicName() {
+        return "${outbox.kafka.topic.order-events:order-events}";
+    }
+
+    @jakarta.annotation.PostConstruct
+    private void init() {
+        log.info("OrderWorkflowEventListener initialized and ready to consume topic='{}' with consumerName={}", topicName(), CONSUMER_NAME);
+    }
+
     @KafkaListener(
         topics = "${outbox.kafka.topic.order-events:order-events}",
         groupId = "orders-workflow-listener",
         containerFactory = "orderWorkflowKafkaListenerContainerFactory"
     )
     public void onMessage(ConsumerRecord<String, String> consumerRecord) {
+        log.debug("OrderWorkflowEventListener.onMessage called headers={} key={} partition={} offset={}", consumerRecord.headers(), consumerRecord.key(), consumerRecord.partition(), consumerRecord.offset());
         String eventType = header(consumerRecord, "eventType");
         if (!EventType.INVENTORY_RESERVATION_REQUESTED.name().equals(eventType)
             && !EventType.INVENTORY_RESERVED.name().equals(eventType)

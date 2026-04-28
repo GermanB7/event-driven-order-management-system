@@ -12,6 +12,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.List;
 import java.util.Optional;
@@ -57,6 +58,8 @@ class ProcessInventoryReservationRequestedUseCaseTest {
                 "corr-100",
                 "cause-100",
                 Instant.parse("2026-04-01T10:00:05Z"),
+                new BigDecimal("30.00"),
+                "USD",
                 List.of(new InventoryReservationRequestedCommand.RequestedItem("SKU-1", 3))
             )
         );
@@ -75,6 +78,8 @@ class ProcessInventoryReservationRequestedUseCaseTest {
         assertThat(envelopeCaptor.getValue().eventType()).isEqualTo(EventType.INVENTORY_RESERVED);
         assertThat(envelopeCaptor.getValue().aggregateId()).isEqualTo(orderId.toString());
         assertThat(envelopeCaptor.getValue().payload().path("inventoryStatus").asText()).isEqualTo("RESERVED");
+        assertThat(envelopeCaptor.getValue().payload().path("totalAmount").decimalValue()).isEqualByComparingTo("30.00");
+        assertThat(envelopeCaptor.getValue().payload().path("currency").asText()).isEqualTo("USD");
         assertThat(envelopeCaptor.getValue().payload().path("items")).hasSize(1);
         assertThat(envelopeCaptor.getValue().payload().path("items").get(0).path("status").asText()).isEqualTo("RESERVED");
     }
@@ -97,6 +102,8 @@ class ProcessInventoryReservationRequestedUseCaseTest {
                 "corr-101",
                 "cause-101",
                 Instant.parse("2026-04-01T10:00:05Z"),
+                new BigDecimal("30.00"),
+                "USD",
                 List.of(new InventoryReservationRequestedCommand.RequestedItem("SKU-1", 3))
             )
         );
@@ -128,6 +135,8 @@ class ProcessInventoryReservationRequestedUseCaseTest {
                 "corr-102",
                 "cause-102",
                 Instant.parse("2026-04-01T10:00:05Z"),
+                new BigDecimal("10.00"),
+                "USD",
                 List.of(new InventoryReservationRequestedCommand.RequestedItem("SKU-1", 1))
             )
         );
