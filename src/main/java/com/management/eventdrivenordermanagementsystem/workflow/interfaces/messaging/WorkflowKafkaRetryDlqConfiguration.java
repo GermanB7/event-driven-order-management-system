@@ -31,10 +31,12 @@ public class WorkflowKafkaRetryDlqConfiguration {
         MeterRegistry meterRegistry,
         @Value("${workflow.kafka.retry.max-attempts:3}") int maxAttempts,
         @Value("${workflow.kafka.retry.backoff-ms:1000}") long backoffMs,
-        @Value("${workflow.kafka.dlq.topic:order-events.workflow.dlq}") String dlqTopic
+        @Value("${workflow.kafka.dlq.topic:order-events.workflow.dlq}") String dlqTopic,
+        @Value("${spring.kafka.listener.auto-startup:true}") boolean autoStartup
     ) {
         ConcurrentKafkaListenerContainerFactory<String, String> factory = new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
+        factory.setAutoStartup(autoStartup);
 
         Counter retryCounter = meterRegistry.counter("workflow.consumer.retry.attempt");
         Counter dlqCounter = meterRegistry.counter("workflow.consumer.dlq");

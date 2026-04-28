@@ -62,7 +62,11 @@ public abstract class WorkflowE2ETestSupport {
     }
 
     protected UUID createOrder() {
-        seedInventoryStock();
+        return createOrderWithInventoryStock(10, 2);
+    }
+
+    protected UUID createOrderWithInventoryStock(int availableQuantity, int orderQuantity) {
+        seedInventoryStock(availableQuantity);
 
         UUID customerId = UUID.randomUUID();
         String requestBody = """
@@ -70,10 +74,10 @@ public abstract class WorkflowE2ETestSupport {
               "customerId": "%s",
               "currency": "USD",
               "items": [
-                {"sku": "SKU-1", "quantity": 2, "unitPrice": 10.00}
+                {"sku": "SKU-1", "quantity": %d, "unitPrice": 10.00}
               ]
             }
-            """.formatted(customerId);
+            """.formatted(customerId, orderQuantity);
 
         MockHttpServletResponse response;
         try {
@@ -141,14 +145,18 @@ public abstract class WorkflowE2ETestSupport {
     }
 
     protected void seedInventoryStock() {
+        seedInventoryStock(10);
+    }
+
+    protected void seedInventoryStock(int availableQuantity) {
         jdbcTemplate.update("delete from inventory.inventory_items where sku = ?", "SKU-1");
         jdbcTemplate.update(
             """
                 insert into inventory.inventory_items (sku, available_quantity, reserved_quantity, updated_at)
                 values (?, ?, ?, current_timestamp())
-                """,
+            """,
             "SKU-1",
-            10,
+            availableQuantity,
             0
         );
     }

@@ -25,7 +25,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(properties = {
     "outbox.relay.enabled=false",
-    "outbox.kafka.enabled=false"
+    "outbox.kafka.enabled=false",
+    "spring.kafka.listener.auto-startup=false"
 })
 @Sql(scripts = "classpath:sql/inventory-slice-schema.sql")
 class InventoryReservationRequestedListenerIntegrationTest {
@@ -154,6 +155,8 @@ class InventoryReservationRequestedListenerIntegrationTest {
               "workflowId": "%s",
               "correlationId": "%s",
               "causationId": "%s",
+              "totalAmount": 10.00,
+              "currency": "USD",
               "items": [
                 {"sku": "SKU-1", "quantity": %d}
               ]

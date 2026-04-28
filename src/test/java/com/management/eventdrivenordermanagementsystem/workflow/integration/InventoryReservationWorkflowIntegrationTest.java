@@ -46,7 +46,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 @SpringBootTest(properties = {
     "outbox.relay.enabled=false",
-    "outbox.kafka.enabled=false"
+    "outbox.kafka.enabled=false",
+    "spring.kafka.listener.auto-startup=false"
 })
 @Sql(scripts = "classpath:sql/order-slice-schema.sql")
 class InventoryReservationWorkflowIntegrationTest {

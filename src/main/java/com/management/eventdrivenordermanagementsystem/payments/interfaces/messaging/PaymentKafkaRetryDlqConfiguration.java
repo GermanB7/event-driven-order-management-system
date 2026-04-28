@@ -32,10 +32,12 @@ public class PaymentKafkaRetryDlqConfiguration {
         MeterRegistry meterRegistry,
         @Value("${payment.kafka.retry.max-attempts:3}") int maxAttempts,
         @Value("${payment.kafka.retry.backoff-ms:1000}") long backoffMs,
-        @Value("${payment.kafka.dlq.topic:order-events.payment.dlq}") String dlqTopic
+        @Value("${payment.kafka.dlq.topic:order-events.payment.dlq}") String dlqTopic,
+        @Value("${spring.kafka.listener.auto-startup:true}") boolean autoStartup
     ) {
         ConcurrentKafkaListenerContainerFactory<String, String> factory = new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
+        factory.setAutoStartup(autoStartup);
 
         Counter retryCounter = meterRegistry.counter("payments.authorization.request.retry.attempt");
         Counter dlqCounter = meterRegistry.counter("payments.authorization.request.dlq");

@@ -31,7 +31,8 @@ public class InventoryKafkaRetryDlqConfiguration {
         MeterRegistry meterRegistry,
         @Value("${inventory.kafka.retry.max-attempts:3}") int maxAttempts,
         @Value("${inventory.kafka.retry.backoff-ms:1000}") long backoffMs,
-        @Value("${inventory.kafka.dlq.reservation-topic:order-events.inventory.reservation.dlq}") String dlqTopic
+        @Value("${inventory.kafka.dlq.reservation-topic:order-events.inventory.reservation.dlq}") String dlqTopic,
+        @Value("${spring.kafka.listener.auto-startup:true}") boolean autoStartup
     ) {
         return factory(
             consumerFactory,
@@ -40,6 +41,7 @@ public class InventoryKafkaRetryDlqConfiguration {
             maxAttempts,
             backoffMs,
             dlqTopic,
+            autoStartup,
             "inventory-reservation-requested-listener",
             "inventory.reservation.request.retry.attempt",
             "inventory.reservation.request.dlq"
@@ -53,7 +55,8 @@ public class InventoryKafkaRetryDlqConfiguration {
         MeterRegistry meterRegistry,
         @Value("${inventory.kafka.retry.max-attempts:3}") int maxAttempts,
         @Value("${inventory.kafka.retry.backoff-ms:1000}") long backoffMs,
-        @Value("${inventory.kafka.dlq.release-topic:order-events.inventory.release.dlq}") String dlqTopic
+        @Value("${inventory.kafka.dlq.release-topic:order-events.inventory.release.dlq}") String dlqTopic,
+        @Value("${spring.kafka.listener.auto-startup:true}") boolean autoStartup
     ) {
         return factory(
             consumerFactory,
@@ -62,6 +65,7 @@ public class InventoryKafkaRetryDlqConfiguration {
             maxAttempts,
             backoffMs,
             dlqTopic,
+            autoStartup,
             "inventory-release-requested-listener",
             "inventory.release.request.retry.attempt",
             "inventory.release.request.dlq"
@@ -75,12 +79,14 @@ public class InventoryKafkaRetryDlqConfiguration {
         int maxAttempts,
         long backoffMs,
         String dlqTopic,
+        boolean autoStartup,
         String consumerName,
         String retryMetric,
         String dlqMetric
     ) {
         ConcurrentKafkaListenerContainerFactory<String, String> factory = new ConcurrentKafkaListenerContainerFactory<>();
         factory.setConsumerFactory(consumerFactory);
+        factory.setAutoStartup(autoStartup);
 
         Counter retryCounter = meterRegistry.counter(retryMetric);
         Counter dlqCounter = meterRegistry.counter(dlqMetric);

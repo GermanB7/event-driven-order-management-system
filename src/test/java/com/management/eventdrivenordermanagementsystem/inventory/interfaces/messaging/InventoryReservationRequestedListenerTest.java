@@ -71,6 +71,8 @@ class InventoryReservationRequestedListenerTest {
                   "workflowId": "wf-200",
                   "correlationId": "corr-200",
                   "causationId": "cause-200",
+                  "totalAmount": 10.00,
+                  "currency": "USD",
                   "items": [{"sku": "SKU-1", "quantity": 1}]
                 }
                 """.formatted(orderId)

@@ -135,8 +135,8 @@ public record Order(
     }
 
     public Order markCancelled(Instant now) {
-        if (status != OrderStatus.PAYMENT_PENDING) {
-            throw new OrderDomainException("Order can move to CANCELLED only from PAYMENT_PENDING");
+        if (status != OrderStatus.INVENTORY_RESERVATION_PENDING && status != OrderStatus.PAYMENT_PENDING) {
+            throw new OrderDomainException("Order can move to CANCELLED only from INVENTORY_RESERVATION_PENDING or PAYMENT_PENDING");
         }
         if (now == null) {
             throw new OrderDomainException("Order updatedAt must be present");
